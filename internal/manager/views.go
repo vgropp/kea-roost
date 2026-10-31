@@ -46,6 +46,7 @@ type Manager struct {
 	readMu     sync.Mutex
 	current    server
 	checked    time.Time
+	version    string
 	now        func() time.Time
 	writeMu    sync.Mutex
 	arpURL     string
@@ -57,6 +58,12 @@ type Manager struct {
 func New(client *kea.Client, store *Store, serverName string) *Manager {
 	return &Manager{kea: client, store: store, serverName: serverName, now: time.Now}
 }
+
+// SetVersion names the running release.
+func (m *Manager) SetVersion(version string) { m.version = version }
+
+// Version returns the running release.
+func (m *Manager) Version() string { return m.version }
 
 // Store exposes backups and audit log.
 func (m *Manager) Store() *Store { return m.store }

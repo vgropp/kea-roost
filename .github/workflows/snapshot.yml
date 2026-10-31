@@ -1,0 +1,59 @@
+name: snapshot
+
+# Every green commit on main becomes the snapshot image and renews the draft release.
+on:
+  workflow_run:
+    workflows: [ci]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      next: ${{ steps.next.outputs.version }}
+      short: ${{ steps.next.outputs.short }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - id: next
+        run: |
+          echo "version=$(.github/scripts/next-version.sh)" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+  image:
+    needs: version
+    uses: ./.github/workflows/image.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      ref: ${{ github.event.workflow_run.head_sha }}
+      version: ${{ needs.version.outputs.next || 'snapshot' }}-snapshot.${{ needs.version.outputs.short }}
+      tags: type=raw,value=snapshot
+
+  draft:
+    needs: [version, image]
+    if: needs.version.outputs.next != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Renew the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NEXT: ${{ needs.version.outputs.next }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          gh release list --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' |
+            while read -r draft; do gh release delete "$draft" --yes; done
+          printf 'docker pull ghcr.io/%s:%s\n' "$GH_REPO" "${NEXT#v}" > image.txt
+          gh release create "$NEXT" --draft --target "$SHA" --title "$NEXT" --generate-notes --notes-file image.txt

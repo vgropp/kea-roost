@@ -211,6 +211,7 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 		"writable":   s.auth.User != "",
 		"devices":    s.mgr.DevicesEnabled(),
 		"peers":      s.mgr.HasPeers(),
+		"version":    s.mgr.Version(),
 		"user":       user(r),
 	})
 }

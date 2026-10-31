@@ -1301,6 +1301,7 @@ async function start() {
   ];
   document.getElementById('nav').replaceChildren(...groups.map(group => h('div', { class: 'nav-group' },
     group.filter(Boolean).map(([page, label]) => h('a', { href: '#/' + page, 'data-page': page }, label)))));
+  document.querySelector('.brand').title = 'Kea Roost ' + meta.version;
   document.getElementById('server-chip').replaceChildren(meta.writable ? '' : h('span', { class: 'tag' }, 'read-only'));
   window.addEventListener('hashchange', route);
   route();
