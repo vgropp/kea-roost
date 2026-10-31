@@ -353,6 +353,10 @@ func (m *Manager) applyOn(ctx context.Context, s server, c change, res *Result) 
 		}
 	}
 	if !step("Back up configuration", err) {
+		var unreachable *kea.UnreachableError
+		if errors.As(err, &unreachable) {
+			return StatusFailed, "Nothing was changed because " + s.name + " is unreachable."
+		}
 		return StatusFailed, "Nothing was changed because the backup failed."
 	}
 

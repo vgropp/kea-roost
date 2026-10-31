@@ -38,7 +38,8 @@ type ClassInput struct {
 
 // Classes lists the client classes and how many reservations use them.
 func (m *Manager) Classes(ctx context.Context) (*ClassList, error) {
-	config, err := m.kea.ConfigGet(ctx)
+	src := m.source(ctx).client
+	config, err := src.ConfigGet(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +55,7 @@ func (m *Manager) Classes(ctx context.Context) (*ClassList, error) {
 	if err != nil {
 		return nil, err
 	}
-	commands, err := m.kea.Commands(ctx)
+	commands, err := src.Commands(ctx)
 	if err != nil {
 		return nil, err
 	}

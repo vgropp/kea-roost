@@ -35,13 +35,17 @@ const (
 	clockSkewWarn   = 30
 )
 
-// Manager serves one Kea instance and keeps its peers in step with it. Everything
-// shown comes from the primary; changes go to all servers.
+// Manager serves one Kea instance and keeps its peers in step with it. What it
+// shows comes from the primary, or from a peer while the primary is down. Changes
+// always start on the primary, so they are refused then.
 type Manager struct {
 	kea        *kea.Client
 	peers      []server
 	store      *Store
 	serverName string
+	readMu     sync.Mutex
+	current    server
+	checked    time.Time
 	now        func() time.Time
 	writeMu    sync.Mutex
 	arpURL     string
@@ -130,7 +134,7 @@ func (m *Manager) leaseView(l kea.Lease, now time.Time) LeaseView {
 		Started:   time.Unix(l.CLTT, 0),
 		Expires:   expires,
 		Remaining: remaining,
-		Server:    m.serverName,
+		Server:    m.sourceName(),
 	}
 	switch l.State {
 	case leaseStateDefault:
@@ -153,7 +157,7 @@ func (m *Manager) leaseView(l kea.Lease, now time.Time) LeaseView {
 
 // Leases returns all leases.
 func (m *Manager) Leases(ctx context.Context) ([]LeaseView, error) {
-	leases, err := m.kea.Leases(ctx)
+	leases, err := m.source(ctx).client.Leases(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +278,7 @@ type ReservationList struct {
 
 // allHosts fetches the reservations of every subnet plus the global ones.
 func (m *Manager) allHosts(ctx context.Context, subnets []kea.Subnet) ([]kea.Host, error) {
-	return hostsOn(ctx, m.kea, subnets)
+	return hostsOn(ctx, m.source(ctx).client, subnets)
 }
 
 func hostsOn(ctx context.Context, k *kea.Client, subnets []kea.Subnet) ([]kea.Host, error) {
@@ -293,7 +297,7 @@ func hostsOn(ctx context.Context, k *kea.Client, subnets []kea.Subnet) ([]kea.Ho
 }
 
 func (m *Manager) subnets(ctx context.Context) ([]kea.Subnet, error) {
-	config, err := m.kea.ConfigGet(ctx)
+	config, err := m.source(ctx).client.ConfigGet(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +316,7 @@ func (m *Manager) Reservations(ctx context.Context) (*ReservationList, error) {
 		return nil, err
 	}
 	list := &ReservationList{Reservations: []ReservationView{}, Warnings: []Warning{}}
-	leases, err := m.kea.Leases(ctx)
+	leases, err := m.source(ctx).client.Leases(ctx)
 	if err != nil {
 		list.Warnings = append(list.Warnings, Warning{SeverityWarn, "Lease data unavailable: " + err.Error()})
 	}
@@ -515,7 +519,7 @@ func (m *Manager) Subnets(ctx context.Context) (*SubnetList, error) {
 		return nil, err
 	}
 	list := &SubnetList{Warnings: []Warning{}, Editable: m.subnetsEditable(ctx)}
-	stats, err := m.kea.Statistics(ctx)
+	stats, err := m.source(ctx).client.Statistics(ctx)
 	if err != nil {
 		list.Warnings = append(list.Warnings, Warning{SeverityWarn, "Statistics unavailable: " + err.Error()})
 	}
@@ -565,7 +569,7 @@ func (m *Manager) haViews(ctx context.Context, status *kea.Status) ([]HAView, []
 		if v.Severity != SeverityOK {
 			warnings = append(warnings, Warning{v.Severity, fmt.Sprintf("HA state of %s: %s", local.ServerName, local.State)})
 		}
-		if hb, err := m.kea.HAHeartbeat(ctx, local.ServerName); err == nil {
+		if hb, err := m.source(ctx).client.HAHeartbeat(ctx, local.ServerName); err == nil {
 			v.UnsentUpdates = &hb.UnsentUpdates
 		}
 		if r := rel.Servers.Remote; r != nil {
@@ -624,11 +628,15 @@ type Dashboard struct {
 // the very state it has to show.
 func (m *Manager) Dashboard(ctx context.Context) *Dashboard {
 	d := &Dashboard{HA: []HAView{}, HAWarnings: []Warning{}, Servers: []ServerRow{}, RecentLeases: []LeaseView{}, Subnets: []SubnetView{}, Warnings: []Warning{}}
-	d.Server.Name = m.serverName
-	d.Server.URL = m.kea.URL()
+	src := m.source(ctx)
+	d.Server.Name = src.name
+	d.Server.URL = src.client.URL()
 	collectRows := m.startServerRows(ctx)
+	if src.client != m.kea {
+		d.Warnings = append(d.Warnings, Warning{SeverityCrit, fmt.Sprintf("%s is unreachable. Showing the data of %s; changes are not possible.", m.serverName, src.name)})
+	}
 
-	status, err := m.kea.Status(ctx)
+	status, err := src.client.Status(ctx)
 	if err == nil {
 		d.Server.Reachable = true
 		d.Server.Uptime = status.Uptime
@@ -637,7 +645,7 @@ func (m *Manager) Dashboard(ctx context.Context) *Dashboard {
 		if status.Sockets.Status != "" && status.Sockets.Status != "ready" {
 			d.Warnings = append(d.Warnings, Warning{SeverityCrit, "DHCP sockets: " + status.Sockets.Status})
 		}
-		d.Server.Version, err = m.kea.Version(ctx)
+		d.Server.Version, err = src.client.Version(ctx)
 		if err != nil {
 			d.warn(err, "Version")
 		}
@@ -646,7 +654,7 @@ func (m *Manager) Dashboard(ctx context.Context) *Dashboard {
 		d.Server.Error = err.Error()
 		d.Warnings = append(d.Warnings, Warning{SeverityCrit, err.Error()})
 	}
-	if t := m.kea.LastContact(); !t.IsZero() {
+	if t := src.client.LastContact(); !t.IsZero() {
 		d.Server.LastContact = &t
 	}
 	d.Servers = collectRows()
@@ -692,7 +700,7 @@ func (m *Manager) recentLeases(ctx context.Context, leases []LeaseView) []LeaseV
 }
 
 func (m *Manager) fillCounts(ctx context.Context, d *Dashboard) {
-	if config, err := m.kea.ConfigGet(ctx); err == nil {
+	if config, err := m.source(ctx).client.ConfigGet(ctx); err == nil {
 		if lossy := kea.LossyOptions(config); len(lossy) > 0 {
 			d.Warnings = append(d.Warnings, Warning{SeverityWarn, fmt.Sprintf("Changes are locked: config-write would erase the value of %s", strings.Join(lossy, ", "))})
 		}
