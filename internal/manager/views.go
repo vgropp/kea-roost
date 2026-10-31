@@ -67,8 +67,9 @@ func (m *Manager) ServerName() string { return m.serverName }
 // Severity grades warnings and states.
 type Severity string
 
-// Severities in ascending order.
+// Severities: info only tells something, the others grade in ascending order.
 const (
+	SeverityInfo Severity = "info"
 	SeverityOK   Severity = "ok"
 	SeverityWarn Severity = "warn"
 	SeverityCrit Severity = "crit"

@@ -6,7 +6,8 @@
 Kea Roost is a lightweight, self-hosted web interface and dashboard for the
 [ISC Kea](https://www.isc.org/kea/) DHCPv4 server. Manage DHCP leases and reservations,
 client classes, subnets and pools in the browser, keep an HA pair in step and operate
-it, and find devices on the network that have no reservation yet.
+it, find out why a client gets its address, and see which devices on the network have
+no reservation yet.
 
 It is a single Go binary with the frontend embedded, runs in Docker, and needs no
 database or agents. It talks to Kea exclusively through the Kea management API and
@@ -49,6 +50,16 @@ lease into a static DHCP reservation in two clicks.
 - **[openwrt-ap-dashboard](https://github.com/vgropp/openwrt-ap-dashboard) integration
   (optional):** shows the access point, network and signal of WiFi clients on the
   devices and leases pages.
+- **Client details:** a click on an address or MAC in any table opens everything about
+  that client: lease, reservation, network, WiFi and its changes. It explains why the
+  client gets its address and which level sets each DHCP option, including what that
+  overrides, and says what cannot be known without the client's packet, see
+  [Diagnostics](#diagnostics).
+- **Health:** one page for every server: reachability, sockets, HA, clock, hooks,
+  integrations, and DHCP traffic from Discover to Ack with drops, NAKs and failed
+  allocations.
+- **Configuration review:** finds what Kea accepts without complaint, such as ignored
+  reservations, unused classes, duplicate addresses and overlapping pools.
 - **Audit log:** every change with its user and result, and downloadable backups.
 - **Safety checks:** see [How changes are applied](#how-changes-are-applied).
 - **Interface:** Classic and Modern themes in light and dark, usable on a phone,
@@ -69,6 +80,10 @@ The pictures show invented devices.
 | Leases (Classic, light) | Subnets (Classic, light) |
 |---|---|
 | ![Table of Kea DHCP leases with search, filters and MAC vendors](docs/screenshots/leases.png) | ![Kea subnet with gateway, DNS servers and pool utilization](docs/screenshots/subnets.png) |
+
+| Client details (Classic, light) | Health (Classic, light) |
+|---|---|
+| ![Client popup with lease, reservation, network, WiFi and why the client gets its address](docs/screenshots/client.png) | ![Health page with checks per Kea server and DHCP traffic](docs/screenshots/health.png) |
 
 | Reservations (Classic, light) | New reservation with an address conflict |
 |---|---|
@@ -230,6 +245,65 @@ reservations, client classes and subnets of all servers the same:
 Every peer needs the hooks of the primary, a control socket with the same login,
 and a configuration file the Kea user can write. Settings outside of these three
 areas, such as global options, are neither compared nor copied.
+
+## Diagnostics
+
+Everything here only reads. It needs no extra setup, no access to the Kea logs and no
+packet capture: it works from the Kea API and, if configured, the two integrations.
+
+### Client details
+
+Click an address or MAC in the leases, reservations or devices table, or in the recent
+leases on the dashboard. The tables stay where they are, and a popup shows:
+
+- the lease, the reservation, what the network saw and the WiFi connection,
+- a step by step answer to why the client has its address: which subnet, whether a
+  reservation applies, where the address comes from, its classes and its lease lifetime,
+- every DHCP option it receives, which level sets it, and the values that one
+  overrides. From weak to strong: global, client class, shared network, subnet, pool,
+  reservation,
+- the changes made to this client, from the audit log.
+
+It also names what goes wrong: a reservation Kea ignores because
+`reservations-global` or `reservations-in-subnet` is off, a reserved address held by
+another client, a client that moves at its next renewal, or a device using an address
+inside a pool without a lease.
+
+The explanation is retraced from the configuration, not read from Kea. What depends on
+the packet of the client is listed instead of guessed: a class with a `test` only shows
+up as "applies if the client matches". A device without a lease outside of the pools
+counts as *probably* static, because a foreign DHCP server would look the same.
+
+### Health
+
+The Health page runs its checks each time it loads, per server:
+
+| Area | What is checked |
+|---|---|
+| Server | Reachable, Kea version, uptime, DHCP sockets |
+| HA | State, partner, clock skew, lease updates held back while the partner was away |
+| Hooks | Which are loaded and what is missing without them |
+| Configuration | Write lock from a lost option, same state on all servers, same Kea release |
+| Integrations | arpmonitor and openwrt-ap-dashboard reachable |
+
+The DHCP traffic shows Discover, Offer, Request and Ack as bars, with counters for NAKs,
+declined addresses, drops, malformed packets, failed allocations and reservation
+conflicts. All of them count since Kea started. Shares are only rated from 50 packets
+on, and drops on a standby do not count, because it leaves requests to the primary.
+
+### Configuration review
+
+Kea starts happily with many mistakes. The review lists them, worst first:
+
+- **Problems:** reservations ignored by a setting, addresses reserved twice, reservations
+  outside of their subnet, overlapping pools, pools reaching outside of the subnet.
+- **Warnings:** a class that does not exist, a hostname used twice, an address in no
+  subnet, a gateway outside of the subnet, a subnet that serves nobody.
+- **Notes:** classes that never apply, reserved addresses inside a pool, options set to
+  the value they inherit anyway, subnets without a gateway or DNS server.
+
+A note is not a mistake. A reservation inside a pool works, for example; it can only
+collide with a client that got the address before.
 
 ## Devices
 

@@ -177,9 +177,22 @@ function refreshControls(load) {
   return [select, h('button', { onclick: load }, 'Refresh')];
 }
 
-function closeDialog() { dialog.close(); dialog.replaceChildren(); }
+// The client popup closes on a click next to it. Only one that also started there
+// counts, so that selecting text inside can end anywhere.
+function outsideDialog(event) {
+  const r = dialog.getBoundingClientRect();
+  return event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom;
+}
+let pressedOutside = false;
+dialog.addEventListener('mousedown', event => { pressedOutside = outsideDialog(event); });
+dialog.addEventListener('click', event => {
+  if (dialog.classList.contains('wide') && pressedOutside && outsideDialog(event)) closeDialog();
+});
+
+function closeDialog() { dialog.close(); dialog.replaceChildren(); dialog.classList.remove('wide'); }
 
 function showDialog(...content) {
+  dialog.classList.remove('wide');
   dialog.replaceChildren(...content.filter(Boolean));
   if (!dialog.open) dialog.showModal();
 }
@@ -302,7 +315,7 @@ const leaseStateKind = { active: 'ok', expired: 'neutral', released: 'neutral', 
 
 function leaseColumns() {
   return [
-      { key: 'ipAddress', label: 'IP', class: 'mono', sort: r => ipKey(r.ipAddress), search: r => r.ipAddress },
+      { key: 'ipAddress', label: 'IP', class: 'mono', sort: r => ipKey(r.ipAddress), search: r => r.ipAddress, render: r => clientLink(r.ipAddress) },
       { key: 'hwAddress', label: 'MAC', class: 'mono', search: r => `${r.hwAddress} ${r.vendor || ''}`, render: r => macCell(r.hwAddress, r.vendor) },
       { key: 'clientId', label: 'Client-ID', class: 'mono clip', search: r => r.clientId, render: r => r.clientId ? h('span', { title: r.clientId }, r.clientId) : '–' },
       {
@@ -395,13 +408,24 @@ function searchLink(page, text) {
   return `#/${page}?q=${encodeURIComponent(text)}`;
 }
 
+// Opens the client popup from any table.
+function clientLink(id, content) {
+  return h('a', {
+    href: '#',
+    class: 'client-link',
+    title: 'Show everything about this client',
+    onclick: event => { event.preventDefault(); clientDialog(id); },
+  }, content ?? id);
+}
+
 // MAC address with its vendor as tooltip.
 function macCell(mac, vendor) {
   if (!mac) return '–';
+  const link = text => /^[0-9a-f]{2}([:-][0-9a-f]{2}){5}$/i.test(mac) ? clientLink(mac, text) : text;
   if (vendor?.startsWith('Private MAC')) {
-    return [mac, ' ', h('span', { class: 'state neutral', title: vendor }, 'local')];
+    return [link(mac), ' ', h('span', { class: 'state neutral', title: vendor }, 'local')];
   }
-  return vendor ? h('span', { class: 'vendor', title: vendor }, mac) : mac;
+  return link(vendor ? h('span', { class: 'vendor', title: vendor }, mac) : mac);
 }
 
 // Reservation column of leases and devices.
@@ -658,7 +682,7 @@ pages.devices = params => {
     columns: [
       {
         key: 'ipAddress', label: 'IP', class: 'mono', sort: r => ipKey(r.ipAddress), search: r => `${r.ipAddress} ${r.subnet}`,
-        render: r => [r.ipAddress, r.inPool ? ' ' : null, r.inPool ? h('span', { class: 'tag', title: 'Address is inside the dynamic pool' }, 'in pool') : null],
+        render: r => [clientLink(r.ipAddress), r.inPool ? ' ' : null, r.inPool ? h('span', { class: 'tag', title: 'Address is inside the dynamic pool' }, 'in pool') : null],
       },
       { key: 'hwAddress', label: 'MAC', class: 'mono', search: r => `${r.hwAddress} ${r.vendor || ''}`, render: r => macCell(r.hwAddress, r.vendor) },
       { key: 'hostname', label: 'DNS name', search: r => r.hostname },
@@ -1060,6 +1084,178 @@ function serverCard(s, reload) {
     }, 'Copy from primary') : null);
 }
 
+const SEVERITY_KIND = { info: 'neutral', ok: 'ok', warn: 'warn', crit: 'crit' };
+
+function severityWord(severity) {
+  return { info: 'note', ok: 'ok', warn: 'warning', crit: 'problem' }[severity] || severity;
+}
+
+function kvRows(rows) {
+  return h('dl', { class: 'kv' }, rows.filter(Boolean).flatMap(([key, value]) => [h('dt', {}, key), h('dd', {}, value)]));
+}
+
+function clientCard(title, rows, empty, action) {
+  return h('div', { class: 'client-card' }, h('h3', {}, title), rows ? kvRows(rows) : h('p', { class: 'muted' }, empty), action);
+}
+
+// Offers a reservation for what the popup knows about a client without one.
+function reserveClient(c) {
+  if (c.reservation || !meta.writable || !(c.hwAddress || c.lease?.clientId)) return null;
+  const source = c.lease || { ipAddress: c.ipAddress, hwAddress: c.hwAddress, clientId: '', hostname: c.name || '' };
+  const reopen = () => clientDialog(c.hwAddress || c.ipAddress);
+  return h('button', {
+    class: 'small card-action',
+    onclick: () => reserveLease(source, reopen).catch(err => dialog.append(errorNote(err))),
+  }, 'Reserve');
+}
+
+function closeButton() {
+  return h('button', { class: 'dialog-close', title: 'Close', 'aria-label': 'Close', onclick: closeDialog }, '×');
+}
+
+function explainSteps(steps) {
+  return h('ol', { class: 'explain' }, steps.map(s => h('li', { class: SEVERITY_KIND[s.severity] },
+    h('span', { class: 'step-title' }, s.title), h('span', { class: 'step-detail' }, s.detail))));
+}
+
+function optionTable(options) {
+  if (!options.length) return h('p', { class: 'muted' }, 'No options');
+  return h('div', { class: 'table-wrap' }, h('table', {},
+    h('thead', {}, h('tr', {}, h('th', {}, 'Option'), h('th', {}, 'Value'), h('th', {}, 'From'))),
+    h('tbody', {}, options.map(o => h('tr', {},
+      h('td', { class: 'mono' }, o.name),
+      h('td', { class: 'mono wrap' }, o.data, o.overrides.map(x => h('div', { class: 'overridden', title: 'Overridden' }, `${x.data} (${x.source})`))),
+      h('td', {}, h('span', { class: 'tag' }, o.source)))))));
+}
+
+function clientActions(c) {
+  const actions = [];
+  if (c.reservation) actions.push(h('a', { class: 'button', href: searchLink('reservations', c.reservation.identifier) }, 'Open reservation'));
+  if (c.lease) actions.push(h('a', { class: 'button', href: searchLink('leases', c.lease.ipAddress) }, 'Open lease'));
+  if (meta.devices && c.device) actions.push(h('a', { class: 'button', href: searchLink('devices', c.hwAddress) }, 'Open device'));
+  return actions.length ? h('div', { class: 'dialog-actions' }, actions) : null;
+}
+
+function clientBody(c) {
+  const l = c.lease;
+  const r = c.reservation;
+  const d = c.device;
+  const w = c.wifi;
+  return [
+    closeButton(),
+    h('h2', {}, c.name || c.hwAddress || c.ipAddress),
+    h('p', { class: 'client-sub' }, [c.hwAddress, c.ipAddress, c.vendor].filter(Boolean).join(' · ')),
+    notes(c.warnings.map(message => ({ severity: 'warn', message }))),
+    h('div', { class: 'client-grid' },
+      clientCard('Lease', l && [
+        ['Address', l.ipAddress],
+        ['State', state(leaseStateKind[l.state] || 'warn', l.state)],
+        ['Contact', fmtShort(l.started)],
+        ['Remaining', fmtDuration(l.remaining)],
+      ], 'No lease'),
+      clientCard('Reservation', r && [
+        ['Address', r.ipAddress || '–'],
+        ['Hostname', r.hostname || '–'],
+        ['Scope', r.subnetId ? `subnet ${r.subnetId}` : 'global'],
+        r.classes.length ? ['Classes', classTags(r.classes)] : null,
+        r.comment ? ['Comment', r.comment] : null,
+      ], 'No reservation', reserveClient(c)),
+      clientCard('Network', d && [
+        ['Last seen', fmtAge(d.lastSeen)],
+        d.firstSeen ? ['First seen', fmtShort(d.firstSeen)] : null,
+        ['Addresses', d.addresses.length ? d.addresses.map(ip => h('div', {}, ip)) : '–'],
+        d.hostname ? ['DNS name', d.hostname] : null,
+      ], 'Not seen'),
+      w ? clientCard('WiFi', [['Access point', w.accessPoint], ['Network', w.interface], ['Signal', `${w.signal} dBm`], ['Connected', fmtDuration(w.connectedTime)]]) : null),
+    h('h3', {}, c.explanation.static ? 'Why it has this address' : 'Why it gets this address'),
+    explainSteps(c.explanation.steps),
+    c.explanation.unknown.length ? h('div', { class: 'notes' }, h('div', { class: 'note' },
+      h('strong', {}, 'Depends on what the client sends: '), c.explanation.unknown.join(' '))) : null,
+    h('h3', {}, c.explanation.static ? 'Options it would get over DHCP' : 'Options it receives'),
+    optionTable(c.explanation.options),
+    c.history.length ? h('h3', {}, 'Changes') : null,
+    c.history.length ? h('ul', { class: 'history' }, c.history.map(a => h('li', {},
+      h('span', { class: 'mono' }, fmtShort(a.time)), ' ',
+      state({ ok: 'ok', failed: 'crit', partial: 'warn' }[a.status] || 'neutral', a.action), ' ',
+      h('span', { class: 'muted' }, a.user)))) : null,
+    clientActions(c),
+  ];
+}
+
+async function clientDialog(id) {
+  showDialog(closeButton(), h('h2', {}, id), h('p', { class: 'muted' }, 'Loading…'));
+  dialog.classList.add('wide');
+  try {
+    const c = await api('GET', 'clients/' + encodeURIComponent(id));
+    showDialog(...clientBody(c).filter(Boolean));
+    dialog.classList.add('wide');
+  } catch (err) {
+    showDialog(closeButton(), h('h2', {}, id), errorNote(err));
+  }
+}
+
+function funnelRow(label, value, peak) {
+  const fill = h('div', {});
+  fill.style.width = (peak ? value / peak * 100 : 0) + '%';
+  return h('div', { class: 'funnel-row' }, h('span', { class: 'name' }, label), h('div', { class: 'meter' }, fill), h('span', { class: 'num' }, fmtCount(value)));
+}
+
+function trafficCard(t) {
+  const peak = Math.max(t.discover, t.offer, t.request, t.ack, 1);
+  const trouble = [['NAK', t.nak], ['Declined', t.decline], ['Dropped', t.dropped], ['Malformed', t.parseFailed], ['No address', t.allocFailed], ['Conflicts', t.conflicts]];
+  return h('div', { class: 'panel pad' },
+    h('h3', {}, t.server, t.standby ? h('span', { class: 'tag', title: 'A standby leaves requests to the primary' }, 'standby') : null),
+    h('p', { class: 'muted' }, `Since Kea started ${fmtDuration(t.uptime)} ago: ${fmtCount(t.received)} received, ${fmtCount(t.sent)} sent`),
+    funnelRow('Discover', t.discover, peak), funnelRow('Offer', t.offer, peak), funnelRow('Request', t.request, peak), funnelRow('Ack', t.ack, peak),
+    h('div', { class: 'counters' }, trouble.map(([name, value]) => h('div', { class: value ? 'counter warn' : 'counter' }, h('b', {}, fmtCount(value)), h('span', {}, name)))));
+}
+
+function checkPanel(title, checks) {
+  return h('div', { class: 'panel pad' }, h('h3', {}, title),
+    h('ul', { class: 'checks' }, checks.map(c => h('li', {}, state(SEVERITY_KIND[c.severity], c.name), h('span', { class: 'detail' }, c.detail)))));
+}
+
+pages.health = () => {
+  const body = h('div', {});
+  const findings = dataTable({
+    search: 'Search findings',
+    empty: 'Nothing to report',
+    columns: [
+      {
+        key: 'severity', label: 'Level', sort: r => ['crit', 'warn', 'info'].indexOf(r.severity),
+        render: r => state(SEVERITY_KIND[r.severity], severityWord(r.severity)),
+      },
+      { key: 'area', label: 'Area', search: r => r.area },
+      { key: 'target', label: 'Entry', class: 'mono', search: r => r.target },
+      { key: 'message', label: 'Finding', class: 'wrap', search: r => r.message },
+    ],
+    initialSort: 'severity',
+  });
+  const load = async () => {
+    try {
+      const r = await api('GET', 'health');
+      const groups = new Map();
+      for (const c of r.checks) groups.set(c.server || 'General', [...(groups.get(c.server || 'General') || []), c]);
+      const count = list => list.filter(x => x.severity === 'warn' || x.severity === 'crit').length;
+      const open = count(r.checks) + count(r.findings);
+      findings.setRows(r.findings);
+      body.replaceChildren(
+        h('div', { class: 'health-summary ' + SEVERITY_KIND[r.severity] },
+          state(SEVERITY_KIND[r.severity], r.severity === 'ok' ? 'All good' : r.severity === 'crit' ? 'Needs attention' : 'Worth a look'),
+          h('span', { class: 'muted' }, open ? `${open} open points` : `${r.checks.length} checks passed`)),
+        h('div', { class: 'columns' }, [...groups].map(([name, checks]) => checkPanel(name, checks))),
+        h('h2', {}, 'DHCP traffic'),
+        r.traffic.length ? h('div', { class: 'columns' }, r.traffic.map(trafficCard)) : h('div', { class: 'panel empty' }, 'No statistics'),
+        h('h2', {}, 'Configuration review'),
+        findings.el);
+    } catch (err) {
+      body.replaceChildren(errorNote(err));
+    }
+  };
+  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Health'), refreshControls(load)), body);
+  load();
+};
+
 function updateChip(server) {
   document.getElementById('server-chip').replaceChildren(
     server.reachable ? state('ok', server.name) : state('crit', server.name + ' offline'));
@@ -1096,11 +1292,15 @@ async function start() {
     view.replaceChildren(errorNote(err));
     return;
   }
-  const items = [['dashboard', 'Dashboard'], ['leases', 'Leases'], ['reservations', 'Reservations'], ['classes', 'Classes'], ['subnets', 'Subnets'], ['ha', 'HA']];
-  if (meta.devices) items.splice(3, 0, ['devices', 'Devices']);
-  if (meta.peers) items.push(['servers', 'Servers']);
-  if (meta.writable) items.push(['audit', 'Audit log']);
-  document.getElementById('nav').replaceChildren(...items.map(([page, label]) => h('a', { href: '#/' + page, 'data-page': page }, label)));
+  const groups = [
+    [['dashboard', 'Dashboard']],
+    [['leases', 'Leases'], ['reservations', 'Reservations'], meta.devices && ['devices', 'Devices']],
+    [['classes', 'Classes'], ['subnets', 'Subnets']],
+    [['ha', 'HA'], meta.peers && ['servers', 'Servers']],
+    [['health', 'Health'], meta.writable && ['audit', 'Audit log']],
+  ];
+  document.getElementById('nav').replaceChildren(...groups.map(group => h('div', { class: 'nav-group' },
+    group.filter(Boolean).map(([page, label]) => h('a', { href: '#/' + page, 'data-page': page }, label)))));
   document.getElementById('server-chip').replaceChildren(meta.writable ? '' : h('span', { class: 'tag' }, 'read-only'));
   window.addEventListener('hashchange', route);
   route();

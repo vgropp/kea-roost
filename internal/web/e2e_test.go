@@ -49,6 +49,7 @@ func seed(fake *keatest.Server) {
 		{"subnet-id": 0, "hw-address": "00:00:0c:00:00:01", "ip-address": "192.0.2.10", "hostname": "nas",
 			"option-data": []any{map[string]any{"name": "ntp-servers", "code": 42, "data": "192.0.2.1"}}},
 	}
+	fake.Config["reservations-global"] = true
 	fake.Config["client-classes"] = []any{map[string]any{"name": "direct-dns", "option-data": []any{map[string]any{"name": "domain-name-servers", "code": 6, "data": "192.0.2.1"}}}}
 	fake.Hosts[0]["client-classes"] = []any{"direct-dns"}
 	fake.Leases = []map[string]any{
@@ -569,4 +570,89 @@ func TestHAPageOperatesAServer(t *testing.T) {
 	b.poll(`document.querySelector('dialog')?.textContent.includes('takes over all DHCP traffic')`)
 	b.exec(`document.querySelector('dialog button.solid').click()`)
 	b.poll(`document.querySelector('dialog h2')?.textContent === 'Change succeeded'`)
+}
+
+func TestClientPopupExplainsAddress(t *testing.T) {
+	b := start(t)
+	b.open("leases", "Leases")
+	b.exec(`document.querySelector('tbody .client-link').click()`)
+	b.poll(`document.querySelector('dialog.wide')?.textContent.includes('Why it gets this address')`)
+	got := b.text(`document.querySelector('dialog').innerText`)
+	for _, part := range []string{"Lease", "Reservation", "Options it receives"} {
+		if !strings.Contains(got, part) {
+			t.Errorf("%s missing in %s", part, got)
+		}
+	}
+	click := func(x, y string) string {
+		return `(() => { const d = document.querySelector('dialog'), r = d.getBoundingClientRect(), o = { bubbles: true, clientX: ` + x + `, clientY: ` + y + ` };
+			d.dispatchEvent(new MouseEvent('mousedown', o)); d.dispatchEvent(new MouseEvent('mouseup', o)); d.dispatchEvent(new MouseEvent('click', o)); })()`
+	}
+	b.exec(click("r.left + 40", "r.top + 40"))
+	if !evaluate[bool](b, `document.querySelector('dialog').open`) {
+		t.Fatal("a click inside closed the popup")
+	}
+	if got := b.text(`[...document.querySelectorAll('dialog .dialog-actions button')].map(x => x.textContent).join()`); strings.Contains(got, "Close") {
+		t.Fatalf("buttons: %s", got)
+	}
+	b.exec(click("r.left - 20", "r.top - 20"))
+	b.poll(`!document.querySelector('dialog').open && !document.querySelector('dialog').classList.contains('wide')`)
+	b.exec(`document.querySelector('tbody .client-link').click()`)
+	b.poll(`document.querySelector('dialog .dialog-close') !== null && document.querySelector('dialog.wide') !== null`)
+	b.exec(`document.querySelector('dialog .dialog-close').click()`)
+	b.poll(`!document.querySelector('dialog').open`)
+	b.open("devices", "Devices")
+	b.poll(`document.querySelector('tbody .client-link') !== null`)
+	b.open("reservations", "Reservations")
+	b.poll(`document.querySelector('tbody .client-link') !== null`)
+}
+
+func TestHealthPageShowsChecksTrafficAndReview(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/health"))
+	b.poll(`document.querySelector('.health-summary') !== null`)
+	got := b.text(`document.body.textContent`)
+	for _, part := range []string{"DHCP traffic", "Configuration review", "standby", "Discover"} {
+		if !strings.Contains(got, part) {
+			t.Errorf("%s missing", part)
+		}
+	}
+}
+
+func TestReserveSitsInTheEmptyReservationCard(t *testing.T) {
+	b := start(t)
+	b.open("leases", "Leases")
+	b.exec(`[...document.querySelectorAll('tbody .client-link')].find(x => x.textContent === '192.0.2.100').click()`)
+	b.poll(`document.querySelector('dialog .client-card .card-action') !== null`)
+	card := b.text(`document.querySelector('dialog .card-action').parentElement.textContent`)
+	if !strings.Contains(card, "No reservation") {
+		t.Fatalf("card: %s", card)
+	}
+	b.exec(`document.querySelector('dialog .card-action').click()`)
+	b.poll(`document.querySelector('dialog form') !== null`)
+}
+
+func TestNavigationIsGrouped(t *testing.T) {
+	b := start(t)
+	b.open("dashboard", "Dashboard")
+	got := b.text(`[...document.querySelectorAll('.nav-group')].map(g => [...g.children].map(a => a.textContent).join('+')).join(' | ')`)
+	if want := "Dashboard | Leases+Reservations+Devices | Classes+Subnets | HA+Servers | Health+Audit log"; got != want {
+		t.Fatalf("got %s", got)
+	}
+	b.open("subnets", "Subnets")
+	b.poll(`document.querySelector('nav a.active')?.textContent === 'Subnets'`)
+}
+
+func TestClientCardsKeepAddressesOnOneLine(t *testing.T) {
+	b := start(t)
+	b.open("leases", "Leases")
+	b.exec(`document.querySelector('tbody .client-link').click()`)
+	b.poll(`document.querySelector('dialog .client-card dd') !== null`)
+	for _, width := range []int{1000, 760} {
+		b.exec(fmt.Sprintf(`document.querySelector('dialog').style.width = '%dpx'`, width))
+		overflow := evaluate[bool](b, `[...document.querySelectorAll('dialog .client-card dd')].some(d => d.scrollWidth > d.clientWidth + 1)`)
+		broken := evaluate[bool](b, `[...document.querySelectorAll('dialog .client-card dd')].some(d => /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(d.textContent) && d.getClientRects()[0].height > 30)`)
+		if overflow || broken {
+			t.Errorf("width %d: overflow %v, broken %v", width, overflow, broken)
+		}
+	}
 }

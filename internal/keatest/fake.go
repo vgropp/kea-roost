@@ -149,7 +149,7 @@ func reply(w http.ResponseWriter, result int, text string, args any) {
 func (s *Server) handle(command string, args map[string]any) (int, string, any) {
 	switch command {
 	case "list-commands":
-		commands := []any{"config-get", "config-write", "lease4-get-all", "reservation-add", "class-get", "class-update"}
+		commands := []any{"status-get", "config-get", "config-write", "lease4-get-all", "reservation-add", "class-get", "class-update"}
 		if !s.Unknown["subnet4-update"] {
 			commands = append(commands, "subnet4-get", "subnet4-update")
 		}

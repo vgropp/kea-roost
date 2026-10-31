@@ -123,4 +123,11 @@ func TestScreenshots(t *testing.T) {
 	shot("reservations")
 	b.open("subnets", "Subnets")
 	shot("subnets")
+	b.do(chromedp.Navigate(b.url + "/#/health"))
+	b.poll(`document.querySelector('.health-summary') !== null`)
+	shot("health")
+	b.open("leases", "Leases")
+	b.exec(`document.querySelector('tbody .client-link').click()`)
+	b.poll(`document.querySelector('dialog.wide')?.textContent.includes('Why it gets this address')`)
+	shot("client")
 }
