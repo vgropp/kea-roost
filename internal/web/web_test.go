@@ -348,3 +348,11 @@ func TestSecurityHeadersAndAssets(t *testing.T) {
 		t.Error("app.js must not use innerHTML: hostnames come from DHCP clients")
 	}
 }
+
+func TestFrontendIsAlwaysRevalidated(t *testing.T) {
+	_, srv := setup(t, web.Auth{})
+	res, _ := do(t, srv, "GET", "/app.js", "", false)
+	if got := res.Header.Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("Cache-Control: %q", got)
+	}
+}

@@ -610,3 +610,27 @@ func TestHAOperations(t *testing.T) {
 		t.Fatalf("ha: %+v", h)
 	}
 }
+
+// The same claims against what Kea really reports.
+func TestClientViewOfARealServer(t *testing.T) {
+	s := startKea(t, dnsOption)
+	ctx := context.Background()
+	c, err := s.mgr.Client(ctx, "02:00:00:00:00:01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Name != "printer" || c.IPAddress != "192.0.2.10" || c.Reservation == nil {
+		t.Fatalf("client: %+v", c)
+	}
+	i := slices.IndexFunc(c.Explanation.Options, func(o EffectiveOption) bool { return o.Name == "domain-name-servers" })
+	if i < 0 {
+		t.Fatalf("options: %+v", c.Explanation.Options)
+	}
+	if o := c.Explanation.Options[i]; o.Data != "192.0.2.2" || o.Source != "class direct-dns" || o.Overrides[0].Data != "192.0.2.53" {
+		t.Fatalf("option: %+v", o)
+	}
+	report := s.mgr.Health(ctx)
+	if report.Severity != SeverityOK || len(report.Traffic) != 1 {
+		t.Fatalf("report: %+v", report)
+	}
+}

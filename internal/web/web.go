@@ -67,12 +67,14 @@ func New(mgr *manager.Manager, auth Auth, basePath string) http.Handler {
 	mux.HandleFunc("DELETE /api/classes/{name}", s.writer(s.deleteClass))
 	mux.HandleFunc("POST /api/config/write", s.writer(s.persist))
 	mux.HandleFunc("GET /api/servers", s.servers)
+	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("GET /api/clients/{id}", s.client)
 	mux.HandleFunc("POST /api/servers/{name}/ha/{action}", s.writer(s.haAction))
 	mux.HandleFunc("POST /api/servers/{name}/sync", s.writer(s.syncServer))
 	mux.HandleFunc("GET /api/audit", s.writer(s.audit))
 	mux.HandleFunc("GET /api/backups", s.writer(s.backups))
 	mux.HandleFunc("GET /api/backups/{name}", s.writer(s.backup))
-	mux.Handle("GET /", http.FileServerFS(assets))
+	mux.Handle("GET /", revalidate(http.FileServerFS(assets)))
 
 	protection := http.NewCrossOriginProtection()
 	protection.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -82,6 +84,14 @@ func New(mgr *manager.Manager, auth Auth, basePath string) http.Handler {
 	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	root.Handle("/", protection.Handler(s.authenticate(mux)))
 	return forwardedHost(mount(basePath, secureHeaders(root)))
+}
+
+// revalidate keeps a browser from running an old frontend after an update.
+func revalidate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // forwardedHost restores the host the browser used. A reverse proxy that rewrites
@@ -450,6 +460,19 @@ func (s *server) haAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeResult(w, res)
+}
+
+func (s *server) health(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.mgr.Health(r.Context()))
+}
+
+func (s *server) client(w http.ResponseWriter, r *http.Request) {
+	client, err := s.mgr.Client(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, client)
 }
 
 func (s *server) syncServer(w http.ResponseWriter, r *http.Request) {

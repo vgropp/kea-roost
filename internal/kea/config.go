@@ -87,8 +87,9 @@ type rawOption struct {
 }
 
 type rawPool struct {
-	Pool   string `json:"pool"`
-	PoolID *int64 `json:"pool-id"`
+	Pool       string      `json:"pool"`
+	PoolID     *int64      `json:"pool-id"`
+	OptionData []rawOption `json:"option-data"`
 }
 
 type rawSubnet struct {
@@ -111,6 +112,62 @@ type Class struct {
 	Name    string
 	Test    string
 	Options []Option
+}
+
+// OptionLayer is what one level of the configuration sets.
+type OptionLayer struct {
+	Source  string
+	Options []Option
+}
+
+// OptionLayers returns the levels that set options for a client, from the weakest
+// to the strongest: global, classes, shared network, subnet, pool. Of two classes
+// the first one wins. A reservation is stronger than all of these.
+func OptionLayers(config json.RawMessage, subnetID int64, ip netip.Addr, classes []string) ([]OptionLayer, error) {
+	var doc struct {
+		Dhcp4 struct {
+			rawScope
+			SharedNetworks []rawScope `json:"shared-networks"`
+			Classes        []struct {
+				Name       string      `json:"name"`
+				OptionData []rawOption `json:"option-data"`
+			} `json:"client-classes"`
+		} `json:"Dhcp4"`
+	}
+	if err := json.Unmarshal(config, &doc); err != nil {
+		return nil, fmt.Errorf("cannot read configuration: %w", err)
+	}
+	options := func(raw []rawOption) []Option { return mergeOptions(raw) }
+	layers := []OptionLayer{{"global", options(doc.Dhcp4.OptionData)}}
+	for _, name := range slices.Backward(classes) {
+		for _, c := range doc.Dhcp4.Classes {
+			if c.Name == name {
+				layers = append(layers, OptionLayer{"class " + name, options(c.OptionData)})
+			}
+		}
+	}
+	add := func(raw rawSubnet) {
+		layers = append(layers, OptionLayer{"subnet " + raw.Subnet, options(raw.OptionData)})
+		for _, rp := range raw.Pools {
+			if p, err := ParsePool(rp.Pool); err == nil && ip.IsValid() && p.Contains(ip) {
+				layers = append(layers, OptionLayer{"pool " + rp.Pool, options(rp.OptionData)})
+			}
+		}
+	}
+	for _, raw := range doc.Dhcp4.Subnets {
+		if raw.ID == subnetID {
+			add(raw)
+		}
+	}
+	for _, network := range doc.Dhcp4.SharedNetworks {
+		for _, raw := range network.Subnets {
+			if raw.ID == subnetID {
+				layers = append(layers, OptionLayer{"shared network " + network.Name, options(network.OptionData)})
+				add(raw)
+			}
+		}
+	}
+	return layers, nil
 }
 
 // ParseClasses extracts the client classes from a config-get answer.
