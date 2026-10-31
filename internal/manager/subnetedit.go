@@ -295,6 +295,6 @@ func (m *Manager) UpdateSubnet(ctx context.Context, user string, id int64, in Su
 
 // subnetsEditable reports whether Kea offers the subnet commands.
 func (m *Manager) subnetsEditable(ctx context.Context) bool {
-	commands, err := m.kea.Commands(ctx)
+	commands, err := m.source(ctx).client.Commands(ctx)
 	return err == nil && slices.Contains(commands, "subnet4-update")
 }

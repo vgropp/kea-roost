@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vgropp/kea-roost/internal/kea"
 	"github.com/vgropp/kea-roost/internal/keatest"
@@ -360,5 +361,81 @@ func TestRejectedHAActionIsReported(t *testing.T) {
 	}
 	if res.Status != StatusFailed || p.audit(t).Status != StatusFailed {
 		t.Fatalf("result: %+v", res)
+	}
+}
+
+func TestReadsComeFromThePeerWhileThePrimaryIsDown(t *testing.T) {
+	p := setupPair(t)
+	p.peer.Hosts = []map[string]any{{"subnet-id": 0, "hw-address": "aa:bb:cc:00:00:09", "ip-address": "192.0.2.19"}}
+	p.peer.Leases = []map[string]any{{"ip-address": "192.0.2.100", "hw-address": "aa:bb:cc:00:00:03", "subnet-id": 1, "state": 0, "cltt": time.Now().Unix(), "valid-lft": 7200}}
+	p.srv.Close()
+	ctx := context.Background()
+
+	d := p.mgr.Dashboard(ctx)
+	if d.Server.Name != "standby" || !d.Server.Reachable {
+		t.Fatalf("server: %+v", d.Server)
+	}
+	if !slices.ContainsFunc(d.Warnings, func(w Warning) bool {
+		return w.Severity == SeverityCrit && strings.Contains(w.Message, "primary is unreachable")
+	}) {
+		t.Fatalf("warnings: %+v", d.Warnings)
+	}
+	list, err := p.mgr.Reservations(ctx)
+	if err != nil || len(list.Reservations) != 1 {
+		t.Fatalf("reservations: %+v %v", list, err)
+	}
+	leases, err := p.mgr.Leases(ctx)
+	if err != nil || len(leases) != 1 || leases[0].Server != "standby" {
+		t.Fatalf("leases: %+v %v", leases, err)
+	}
+}
+
+func TestChangesAreRefusedWhileThePrimaryIsDown(t *testing.T) {
+	p := setupPair(t)
+	p.srv.Close()
+	res, err := p.mgr.CreateReservation(context.Background(), "alice", input())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != StatusFailed || !strings.Contains(res.Message, "primary is unreachable") {
+		t.Fatalf("result: %+v", res)
+	}
+	if p.peer.HasCall("reservation-add") || p.peer.HasCall("config-write") {
+		t.Fatal("the peer was changed")
+	}
+}
+
+func TestReadsReturnToThePrimary(t *testing.T) {
+	p := setupPair(t)
+	ctx := context.Background()
+	now := time.Now()
+	p.mgr.now = func() time.Time { return now }
+
+	primary := p.mgr.kea
+	down, err := kea.NewClient(kea.Options{URL: "http://127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.mgr.kea = down
+	if got := p.mgr.source(ctx).name; got != "standby" {
+		t.Fatalf("source: %s", got)
+	}
+	p.mgr.kea = primary
+	if got := p.mgr.source(ctx).name; got != "standby" {
+		t.Fatalf("checked again too early: %s", got)
+	}
+	now = now.Add(sourceCheckInterval)
+	if got := p.mgr.source(ctx).name; got != "primary" {
+		t.Fatalf("source: %s", got)
+	}
+}
+
+func TestSingleServerNeverProbes(t *testing.T) {
+	e := setup(t)
+	if got := e.mgr.source(context.Background()).name; got != "primary" {
+		t.Fatalf("source: %s", got)
+	}
+	if e.fake.HasCall("status-get") {
+		t.Fatal("a probe without peers is wasted")
 	}
 }

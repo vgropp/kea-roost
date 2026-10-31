@@ -19,6 +19,8 @@ import (
 const (
 	serverCheckTimeout     = 5 * time.Second
 	dashboardServerTimeout = 2 * time.Second
+	sourceCheckInterval    = 5 * time.Second
+	sourceCheckTimeout     = 1500 * time.Millisecond
 )
 
 type server struct {
@@ -33,6 +35,42 @@ func (m *Manager) AddPeer(name string, client *kea.Client) {
 
 // HasPeers reports whether more than one Kea server is configured.
 func (m *Manager) HasPeers() bool { return len(m.peers) > 0 }
+
+// source picks the server to read from: the primary, or the first peer that
+// answers while it is down. The choice is kept for a moment, because a page reads
+// many times and a server that is gone only answers with a timeout.
+func (m *Manager) source(ctx context.Context) server {
+	primary := server{m.serverName, m.kea}
+	if !m.HasPeers() {
+		return primary
+	}
+	m.readMu.Lock()
+	defer m.readMu.Unlock()
+	if m.current.client != nil && m.now().Sub(m.checked) < sourceCheckInterval {
+		return m.current
+	}
+	m.current, m.checked = primary, m.now()
+	for _, s := range m.servers() {
+		probe, cancel := context.WithTimeout(ctx, sourceCheckTimeout)
+		_, err := s.client.Status(probe)
+		cancel()
+		if err == nil {
+			m.current = s
+			break
+		}
+	}
+	return m.current
+}
+
+// sourceName names the server of the last read.
+func (m *Manager) sourceName() string {
+	m.readMu.Lock()
+	defer m.readMu.Unlock()
+	if m.current.client == nil {
+		return m.serverName
+	}
+	return m.current.name
+}
 
 func (m *Manager) servers() []server {
 	return append([]server{{m.serverName, m.kea}}, m.peers...)

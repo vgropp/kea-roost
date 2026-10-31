@@ -547,6 +547,30 @@ func (s *keaServer) awaitState(want string) {
 	s.t.Fatalf("state is %s instead of %s", state, want)
 }
 
+func TestStandbyAnswersWhileThePrimaryIsDown(t *testing.T) {
+	primary, peer := startPair(t)
+	ctx := context.Background()
+	primary.stop()
+	d := primary.mgr.Dashboard(ctx)
+	if d.Server.Name != "standby" || !d.Server.Reachable {
+		t.Fatalf("server: %+v", d.Server)
+	}
+	if list, err := primary.mgr.Reservations(ctx); err != nil || len(list.Reservations) != 2 {
+		t.Fatalf("reservations: %+v %v", list, err)
+	}
+	in := ReservationInput{SubnetID: 0, IdentifierType: "hw-address", Identifier: "02:00:00:00:00:21", IPAddress: "192.0.2.21"}
+	res, err := primary.mgr.CreateReservation(ctx, "alice", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != StatusFailed {
+		t.Fatalf("result: %+v", res)
+	}
+	if h, err := peer.client.Reservation(ctx, 0, "hw-address", in.Identifier); err != nil || h != nil {
+		t.Fatalf("reservation on the peer: %v %v", h, err)
+	}
+}
+
 func (s *keaServer) ha(name, action string) {
 	s.t.Helper()
 	s.ok(s.mgr.RunHA(context.Background(), "alice", name, action))

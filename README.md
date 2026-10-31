@@ -36,7 +36,8 @@ lease into a static DHCP reservation in two clicks.
 - **Subnets:** gateway, DNS servers, lease lifetime and pools with their utilization,
   and editing all of them.
 - **Several Kea servers:** every change reaches all servers, primary first. A
-  comparison shows what differs, and one click copies it from the primary, see
+  comparison shows what differs, and one click copies it from the primary. If the
+  primary fails, the interface keeps working read-only from a peer, see
   [Several Kea servers](#several-kea-servers).
 - **HA:** state of this server and its partner, and operating the pair: start and end
   maintenance, sync leases, reset and continue.
@@ -210,7 +211,9 @@ reservations, client classes and subnets of all servers the same:
     KEA_SERVER_NAME=primary
     KEA_PEERS=standby=http://192.0.2.2:8051
 
-- All pages read from the primary. If it is down, they show an error until it is back.
+- All pages read from the primary. While it is down, they show the data of the first
+  peer that answers and the dashboard says so. Changes are refused until the primary
+  is back, because they always start there.
 - A change runs on the primary first, then on each peer: backup, change,
   `config-write`, verification. Each server writes its own file, so
   `this-server-name` and `interfaces-config` stay as they are.
