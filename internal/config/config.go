@@ -7,13 +7,17 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 )
 
+var peerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
 // Config holds all settings.
 type Config struct {
 	KeaURL         string
+	Peers          []Peer
 	KeaUser        string
 	KeaPassword    string
 	KeaCAFile      string
@@ -28,6 +32,13 @@ type Config struct {
 	ARPDays        int
 	APDashboardURL string
 	BasePath       string
+}
+
+// Peer is a further Kea server that gets every change. It uses the credentials of
+// the primary.
+type Peer struct {
+	Name string
+	URL  string
 }
 
 // WriteEnabled reports whether a login is configured. Without one, the manager
@@ -64,6 +75,9 @@ func Load(getenv func(string) string) (*Config, error) {
 	if !isHTTPURL(c.KeaURL) {
 		return nil, fmt.Errorf("KEA_URL %q is not an http(s) URL", c.KeaURL)
 	}
+	if c.Peers, err = parsePeers(getenv("KEA_PEERS"), c.ServerName); err != nil {
+		return nil, err
+	}
 	if c.ARPMonitorURL != "" && !isHTTPURL(c.ARPMonitorURL) {
 		return nil, fmt.Errorf("ARPMONITOR_URL %q is not an http(s) URL", c.ARPMonitorURL)
 	}
@@ -86,6 +100,27 @@ func Load(getenv func(string) string) (*Config, error) {
 		return nil, errors.New("MANAGER_USER and MANAGER_PASSWORD must be set together")
 	}
 	return c, nil
+}
+
+// parsePeers reads a list like "standby=http://192.0.2.2:8051,other=http://...".
+func parsePeers(text, primary string) ([]Peer, error) {
+	var peers []Peer
+	seen := map[string]bool{primary: true}
+	for _, item := range strings.Split(text, ",") {
+		if item = strings.TrimSpace(item); item == "" {
+			continue
+		}
+		name, address, ok := strings.Cut(item, "=")
+		if !ok || !peerName.MatchString(name) || !isHTTPURL(address) {
+			return nil, fmt.Errorf("KEA_PEERS entry %q is not name=http(s)-URL", item)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("KEA_PEERS uses the name %q twice, KEA_SERVER_NAME counts as well", name)
+		}
+		seen[name] = true
+		peers = append(peers, Peer{name, address})
+	}
+	return peers, nil
 }
 
 func isHTTPURL(text string) bool {

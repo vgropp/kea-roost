@@ -256,6 +256,8 @@ pages.dashboard = () => {
         tile('Reservations', fmtCount(d.reservations), '', '#/reservations'),
         tile('Subnets', fmtCount(d.subnetCount), '', '#/subnets'),
         tile('Last contact', d.server.lastContact ? h('span', { title: d.server.url }, new Date(d.server.lastContact).toLocaleTimeString(DATE_LOCALE)) : '–')),
+      d.servers.length ? h('h2', {}, 'Servers') : null,
+      d.servers.length ? serverOverview(d.servers) : null,
       d.recentLeases.length ? h('h2', {}, 'Recent leases') : null,
       d.recentLeases.length ? recentLeases(d.recentLeases, load) : null,
       h('h2', {}, 'Pool utilization'),
@@ -886,6 +888,10 @@ pages.ha = () => {
       const warnings = d.server.reachable ? d.haWarnings : d.warnings;
       const content = [notes(warnings), ...d.ha.map(haCard)].filter(Boolean);
       if (!d.ha.length && d.server.reachable) content.push(h('div', { class: 'panel empty' }, 'No HA status: hook libdhcp_ha is not loaded'));
+      if (meta.writable && d.ha.length) {
+        const { servers } = await api('GET', 'servers');
+        content.push(h('h2', {}, 'Operate'), ...servers.filter(s => s.ha).map(s => haActions(s, load)));
+      }
       body.replaceChildren(...content);
     } catch (err) {
       body.replaceChildren(errorNote(err));
@@ -894,6 +900,30 @@ pages.ha = () => {
   view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'High availability'), refreshControls(load)), body);
   load();
 };
+
+const HA_ACTIONS = {
+  maintenance: {
+    label: 'Start maintenance',
+    text: s => `${s.ha.partner} takes over all DHCP traffic and ${s.ha.name} stops serving. Afterwards ${s.ha.name} can be restarted or shut down safely.`,
+  },
+  'maintenance-cancel': { label: 'End maintenance', text: s => `${s.ha.name} and ${s.ha.partner} return to normal operation.` },
+  sync: {
+    label: 'Sync leases',
+    text: s => `${s.ha.name} fetches all leases from ${s.ha.partner}. ${s.ha.partner} stops serving DHCP while this runs, for up to a minute.`,
+  },
+  reset: { label: 'Reset', text: s => `${s.ha.name} leaves the state ${s.ha.state}, goes back to waiting and synchronizes with ${s.ha.partner || 'its partner'}.` },
+  continue: { label: 'Continue', text: s => `Resumes the HA state machine of ${s.ha.name} if it is paused.` },
+};
+
+function haActions(s, reload) {
+  const path = action => `servers/${encodeURIComponent(s.name)}/ha/${action}`;
+  return h('div', { class: 'panel pad server-card' },
+    h('h3', {}, s.name), h('p', {}, state('neutral', s.ha.state)),
+    s.ha.actions.length ? h('div', { class: 'ha-actions' }, s.ha.actions.map(a => h('button', {
+      onclick: () => confirmDialog(HA_ACTIONS[a].label + ': ' + s.name, HA_ACTIONS[a].text(s), HA_ACTIONS[a].label,
+        async () => showResult(await api('POST', path(a)), reload)),
+    }, HA_ACTIONS[a].label))) : h('p', { class: 'muted' }, 'Nothing to do in this state'));
+}
 
 function haCard(ha) {
   const dl = (key, value) => [h('dt', {}, key), h('dd', {}, value)];
@@ -962,6 +992,74 @@ pages.audit = () => {
   load();
 };
 
+pages.servers = () => {
+  const notice = h('div');
+  const list = h('div');
+  const load = async () => {
+    try {
+      const { servers } = await api('GET', 'servers');
+      list.replaceChildren(...servers.map(s => serverCard(s, load)));
+      notice.replaceChildren();
+    } catch (err) {
+      notice.replaceChildren(errorNote(err));
+    }
+  };
+  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Servers'), h('button', { onclick: load }, 'Refresh')),
+    h('p', { class: 'muted' }, 'Changes run on the primary first, then on each peer. Reservations, classes and subnets are compared.'),
+    notice, list);
+  load();
+};
+
+function serverOverview(rows) {
+  const table = dataTable({
+    plain: true,
+    columns: [
+      { key: 'name', label: 'Server', class: 'mono', render: r => h('a', { href: '#/servers' }, r.name) },
+      { key: 'role', label: 'Role' },
+      { key: 'haState', label: 'State', render: r => r.reachable ? state(r.severity, r.haState || 'running') : state('crit', 'unreachable') },
+      { key: 'version', label: 'Version', class: 'mono' },
+      { key: 'uptime', label: 'Uptime', class: 'mono', render: r => r.uptime ? fmtDuration(r.uptime) : '–' },
+      { key: 'activeLeases', label: 'Active leases', class: 'mono', render: r => r.activeLeases != null ? fmtCount(r.activeLeases) : '–' },
+      {
+        key: 'differences', label: 'Configuration',
+        render: r => r.role === 'primary' ? state('ok', 'source')
+          : r.differences == null ? state('neutral', 'unknown')
+            : r.differences ? state('warn', `${r.differences} differ`) : state('ok', 'in sync'),
+      },
+    ],
+  });
+  table.setRows(rows);
+  return table.el;
+}
+
+function serverState(s) {
+  if (!s.reachable) return state('crit', 'unreachable');
+  if (s.role === 'primary') return state('ok', 'source');
+  return s.differences.length ? state('warn', s.differences.length === 1 ? '1 difference' : `${s.differences.length} differences`) : state('ok', 'in sync');
+}
+
+function serverCard(s, reload) {
+  const syncable = s.differences.filter(d => !d.manual);
+  const removed = syncable.filter(d => d.change === 'extra').length;
+  const changeText = { missing: 'missing here', extra: 'only here', different: 'different' };
+  return h('div', { class: 'panel pad server-card' },
+    h('h3', {}, s.name),
+    h('dl', { class: 'kv' },
+      h('dt', {}, 'Role'), h('dd', {}, s.role),
+      h('dt', {}, 'Version'), h('dd', {}, s.version || '–'),
+      h('dt', {}, 'State'), h('dd', {}, serverState(s))),
+    s.error ? h('div', { class: 'note crit' }, s.error) : null,
+    s.differences.length ? h('ul', { class: 'steps' }, s.differences.map(d => h('li', {},
+      state(d.change === 'extra' ? 'crit' : 'warn', changeText[d.change]),
+      h('span', { class: 'detail' }, `${d.kind} ${d.target}${d.manual ? ' (fix in the configuration file)' : ''}`)))) : null,
+    meta.writable && syncable.length ? h('button', {
+      class: 'primary',
+      onclick: () => confirmDialog('Copy from primary',
+        `Make ${s.name} match the primary? ${syncable.length} entries change${removed ? `, ${removed} of them are deleted on ${s.name}` : ''}.`, 'Copy',
+        async () => showResult(await api('POST', 'servers/' + encodeURIComponent(s.name) + '/sync'), reload)),
+    }, 'Copy from primary') : null);
+}
+
 function updateChip(server) {
   document.getElementById('server-chip').replaceChildren(
     server.reachable ? state('ok', server.name) : state('crit', server.name + ' offline'));
@@ -1000,6 +1098,7 @@ async function start() {
   }
   const items = [['dashboard', 'Dashboard'], ['leases', 'Leases'], ['reservations', 'Reservations'], ['classes', 'Classes'], ['subnets', 'Subnets'], ['ha', 'HA']];
   if (meta.devices) items.splice(3, 0, ['devices', 'Devices']);
+  if (meta.peers) items.push(['servers', 'Servers']);
   if (meta.writable) items.push(['audit', 'Audit log']);
   document.getElementById('nav').replaceChildren(...items.map(([page, label]) => h('a', { href: '#/' + page, 'data-page': page }, label)));
   document.getElementById('server-chip').replaceChildren(meta.writable ? '' : h('span', { class: 'tag' }, 'read-only'));

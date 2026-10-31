@@ -35,9 +35,11 @@ const (
 	clockSkewWarn   = 30
 )
 
-// Manager serves one Kea instance.
+// Manager serves one Kea instance and keeps its peers in step with it. Everything
+// shown comes from the primary; changes go to all servers.
 type Manager struct {
 	kea        *kea.Client
+	peers      []server
 	store      *Store
 	serverName string
 	now        func() time.Time
@@ -272,12 +274,16 @@ type ReservationList struct {
 
 // allHosts fetches the reservations of every subnet plus the global ones.
 func (m *Manager) allHosts(ctx context.Context, subnets []kea.Subnet) ([]kea.Host, error) {
-	hosts, err := m.kea.Reservations(ctx, 0)
+	return hostsOn(ctx, m.kea, subnets)
+}
+
+func hostsOn(ctx context.Context, k *kea.Client, subnets []kea.Subnet) ([]kea.Host, error) {
+	hosts, err := k.Reservations(ctx, 0)
 	if err != nil {
 		return nil, err
 	}
 	for _, s := range subnets {
-		list, err := m.kea.Reservations(ctx, s.ID)
+		list, err := k.Reservations(ctx, s.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -604,6 +610,7 @@ type Dashboard struct {
 	} `json:"server"`
 	HA           []HAView     `json:"ha"`
 	HAWarnings   []Warning    `json:"haWarnings"`
+	Servers      []ServerRow  `json:"servers"`
 	RecentLeases []LeaseView  `json:"recentLeases"`
 	ActiveLeases *int         `json:"activeLeases"`
 	TotalLeases  *int         `json:"totalLeases"`
@@ -616,9 +623,10 @@ type Dashboard struct {
 // Dashboard collects the overview. It always succeeds: an unreachable server is
 // the very state it has to show.
 func (m *Manager) Dashboard(ctx context.Context) *Dashboard {
-	d := &Dashboard{HA: []HAView{}, HAWarnings: []Warning{}, RecentLeases: []LeaseView{}, Subnets: []SubnetView{}, Warnings: []Warning{}}
+	d := &Dashboard{HA: []HAView{}, HAWarnings: []Warning{}, Servers: []ServerRow{}, RecentLeases: []LeaseView{}, Subnets: []SubnetView{}, Warnings: []Warning{}}
 	d.Server.Name = m.serverName
 	d.Server.URL = m.kea.URL()
+	collectRows := m.startServerRows(ctx)
 
 	status, err := m.kea.Status(ctx)
 	if err == nil {
@@ -641,6 +649,8 @@ func (m *Manager) Dashboard(ctx context.Context) *Dashboard {
 	if t := m.kea.LastContact(); !t.IsZero() {
 		d.Server.LastContact = &t
 	}
+	d.Servers = collectRows()
+	d.Warnings = append(d.Warnings, rowWarnings(d.Servers)...)
 	return d
 }
 

@@ -65,3 +65,18 @@ func TestSecretFile(t *testing.T) {
 		t.Fatalf("got %q", c.Password)
 	}
 }
+
+func TestPeers(t *testing.T) {
+	c, err := Load(env(map[string]string{"KEA_URL": "http://kea", "KEA_PEERS": "standby=http://a:8051, other=https://b"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Peers) != 2 || c.Peers[0] != (Peer{"standby", "http://a:8051"}) || c.Peers[1].Name != "other" {
+		t.Fatalf("got %+v", c.Peers)
+	}
+	for _, bad := range []string{"http://a", "x=ftp://a", "=http://a", "a=http://a,a=http://b", "kea=http://a"} {
+		if _, err := Load(env(map[string]string{"KEA_URL": "http://kea", "KEA_PEERS": bad})); err == nil {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+}

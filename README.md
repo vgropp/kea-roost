@@ -5,14 +5,14 @@
 
 Kea Roost is a lightweight, self-hosted web interface and dashboard for the
 [ISC Kea](https://www.isc.org/kea/) DHCPv4 server. Manage DHCP leases and reservations,
-client classes, subnets and pools in the browser, see your HA state, and find
-devices on the network that have no reservation yet.
+client classes, subnets and pools in the browser, keep an HA pair in step and operate
+it, and find devices on the network that have no reservation yet.
 
 It is a single Go binary with the frontend embedded, runs in Docker, and needs no
 database or agents. It talks to Kea exclusively through the Kea management API and
 takes no part in DHCP operation: if it stops, Kea keeps serving.
 
-Tested with Kea 3.0.3 and 3.0.4. It currently manages exactly one Kea instance.
+Tested with Kea 3.0.3 and 3.0.4, on its own or as a hot-standby HA pair.
 Kea Roost is an independent project, not affiliated with or endorsed by ISC, and is
 licensed under the [MIT License](LICENSE).
 
@@ -26,8 +26,8 @@ lease into a static DHCP reservation in two clicks.
 
 ## Features
 
-- **Dashboard:** server and HA state, lease, reservation and subnet counts, pool
-  utilization, warnings, and the most recent leases.
+- **Dashboard:** state of every server, HA state, lease, reservation and subnet
+  counts, pool utilization, warnings, and the most recent leases.
 - **Leases:** search, filters, sorting, automatic refresh, MAC vendors, deleting a
   lease, and creating a reservation from a lease.
 - **Reservations:** create, edit and delete global and subnet reservations, change
@@ -35,7 +35,11 @@ lease into a static DHCP reservation in two clicks.
 - **Client classes:** create, edit and delete classes and their DHCP options.
 - **Subnets:** gateway, DNS servers, lease lifetime and pools with their utilization,
   and editing all of them.
-- **HA:** state of this server and its partner.
+- **Several Kea servers:** every change reaches all servers, primary first. A
+  comparison shows what differs, and one click copies it from the primary, see
+  [Several Kea servers](#several-kea-servers).
+- **HA:** state of this server and its partner, and operating the pair: start and end
+  maintenance, sync leases, reset and continue.
 - **Devices:** everything on the network with and without a reservation, how recently
   it was seen, and addresses used by the wrong device.
 - **[arpmonitor](https://github.com/vgropp/arpmonitor) integration (optional):**
@@ -129,6 +133,7 @@ All settings come from environment variables.
 | `KEA_CA_FILE` | CA for HTTPS | system CAs |
 | `KEA_CLIENT_CERT`, `KEA_CLIENT_KEY` | Client certificate (for `cert-required`) | empty |
 | `KEA_SERVER_NAME` | Display name of the server | `kea` |
+| `KEA_PEERS` | Further Kea servers as `name=url,name=url`, same credentials as `KEA_URL` | empty |
 | `MANAGER_LISTEN` | Listen address | `:8080` |
 | `MANAGER_USER`, `MANAGER_PASSWORD` | Login of the interface | empty |
 | `APDASHBOARD_URL` | Base URL of an [openwrt-ap-dashboard](https://github.com/vgropp/openwrt-ap-dashboard), adds WiFi clients to leases and devices | empty |
@@ -152,7 +157,7 @@ The manager does not change the Kea installation. Tested with Kea 3.0.3 and 3.0.
 
 - a `control-sockets` entry of type `http` or `https`,
 - the hooks `libdhcp_lease_cmds.so` and `libdhcp_host_cmds.so`,
-- `libdhcp_ha.so` for the HA view,
+- `libdhcp_ha.so` for the HA page,
 - `libdhcp_subnet_cmds.so` to edit subnets on the subnets page,
 - `libdhcp_class_cmds.so` to edit client classes on the classes page.
 
@@ -195,6 +200,33 @@ the manager, because the socket can change the whole configuration. Then set in
 
 Changes rewrite `kea-dhcp4.conf` through `config-write`, so Kea needs write access to
 that file. It then contains all default values, and comments in it are lost.
+
+## Several Kea servers
+
+Kea HA copies leases, not configuration. With `KEA_PEERS` set, Kea Roost keeps the
+reservations, client classes and subnets of all servers the same:
+
+    KEA_URL=http://192.0.2.1:8051
+    KEA_SERVER_NAME=primary
+    KEA_PEERS=standby=http://192.0.2.2:8051
+
+- All pages read from the primary. If it is down, they show an error until it is back.
+- A change runs on the primary first, then on each peer: backup, change,
+  `config-write`, verification. Each server writes its own file, so
+  `this-server-name` and `interfaces-config` stay as they are.
+- If a server fails, the change stops there and reports `partial`. Nothing is
+  rolled back. The primary failing leaves the peers untouched.
+- The Servers page lists what differs from the primary. **Copy from primary** makes
+  a peer match it, which also deletes what only the peer holds. Subnets that are
+  missing, extra or hold their own reservations stay manual.
+- Deleting a lease also deletes it on the peers.
+- The HA page operates the pair: start and end maintenance, sync leases, reset and
+  continue. It offers what the state of the server allows, and every action is
+  written to the audit log. Maintenance needs both servers in `KEA_PEERS`.
+
+Every peer needs the hooks of the primary, a control socket with the same login,
+and a configuration file the Kea user can write. Settings outside of these three
+areas, such as global options, are neither compared nor copied.
 
 ## Devices
 
