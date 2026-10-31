@@ -1,0 +1,133 @@
+/* Optional theme: round and airy. It only overrides style.css. */
+html[data-theme="modern"] {
+  --bg: #171b21;
+  --surface: #20262e;
+  --surface-solid: #20262e;
+  --surface-2: #2b323c;
+  --line: #38414d;
+  --ink: #e9edf2;
+  --ink-2: #b4bdc9;
+  --ink-3: #98a2b0;
+  --accent: #8fc7ec;
+  --on-accent: #10202c;
+  --ok: #6fd6a8;
+  --warn: #eec872;
+  --crit: #f39a94;
+  --shadow: 0 2px 10px rgb(0 0 0 / .28);
+}
+
+html[data-theme="modern"][data-mode="light"] {
+  --bg: #eef1f4;
+  --surface: #ffffff;
+  --surface-solid: #ffffff;
+  --surface-2: #e6ebf0;
+  --line: #d3dae2;
+  --ink: #1b2129;
+  --ink-2: #47525f;
+  --ink-3: #5c6877;
+  --accent: #2f6f9f;
+  --on-accent: #ffffff;
+  --ok: #137a52;
+  --warn: #875800;
+  --crit: #bb3a30;
+  --shadow: 0 2px 8px rgb(50 65 85 / .1);
+}
+
+html[data-theme="modern"] .top {
+  background: var(--surface);
+  box-shadow: 0 1px 0 var(--line), var(--shadow);
+  border-bottom: 0;
+}
+
+html[data-theme="modern"] .brand { color: var(--ink); font-size: 15px; letter-spacing: .02em; }
+html[data-theme="modern"] .brand-mark { color: var(--accent); }
+
+html[data-theme="modern"] nav { padding: 7px 0; gap: 4px; }
+html[data-theme="modern"] nav a { padding: 6px 13px; border: 0; border-radius: 999px; }
+html[data-theme="modern"] nav a:hover { background: var(--surface-2); }
+html[data-theme="modern"] nav a.active {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+html[data-theme="modern"] h1 { font-size: 22px; letter-spacing: -.01em; }
+html[data-theme="modern"] h2 { color: var(--ink-2); }
+html[data-theme="modern"] dialog h2 { color: var(--ink); }
+
+html[data-theme="modern"] .panel,
+html[data-theme="modern"] .tile,
+html[data-theme="modern"] .note {
+  background: var(--surface);
+  border-color: var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+}
+html[data-theme="modern"] .note { border-left-width: 3px; border-radius: 10px; }
+html[data-theme="modern"] .note.ok { border-left-color: var(--ok); }
+html[data-theme="modern"] .note.warn { border-left-color: var(--warn); }
+html[data-theme="modern"] .note.crit { border-left-color: var(--crit); }
+
+html[data-theme="modern"] .tile { padding: 14px 16px; }
+html[data-theme="modern"] .tile .label { color: var(--ink-2); }
+html[data-theme="modern"] a.tile { transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease; }
+html[data-theme="modern"] a.tile:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+
+html[data-theme="modern"] .meter { height: 10px; border-radius: 999px; }
+html[data-theme="modern"] .meter > div {
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+html[data-theme="modern"] input,
+html[data-theme="modern"] select,
+html[data-theme="modern"] textarea { background: var(--surface); border-radius: 9px; padding: 7px 10px; }
+html[data-theme="modern"] select option { background: var(--surface-solid); }
+html[data-theme="modern"] input:disabled { background: var(--surface-2); }
+
+html[data-theme="modern"] button {
+  background: var(--surface-2);
+  border-radius: 9px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+html[data-theme="modern"] button:hover { border-color: var(--accent); }
+html[data-theme="modern"] button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+html[data-theme="modern"] button.danger.solid { background: var(--crit); border-color: var(--crit); color: var(--surface-solid); }
+
+html[data-theme="modern"] .table-wrap { border-radius: 14px; }
+html[data-theme="modern"] th { color: var(--ink-2); }
+html[data-theme="modern"] td.actions { background: var(--surface-solid); }
+html[data-theme="modern"] tbody tr:hover td.actions { background: var(--surface-solid); }
+html[data-theme="modern"] .tag { border-radius: 999px; padding: 0 7px; }
+
+html[data-theme="modern"] dialog {
+  background: var(--surface-solid);
+  border-color: var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+html[data-theme="modern"] dialog::backdrop { background: rgb(8 11 15 / .55); }
+
+html[data-theme="modern"] h1,
+html[data-theme="modern"] h2 { font-family: var(--sans); }
+html[data-theme="modern"] h2 { font-size: 13px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+html[data-theme="modern"] main { padding: 28px 24px; }
+html[data-theme="modern"] .tiles { gap: 16px; }
+html[data-theme="modern"] .tile { padding: 18px 20px; }
+html[data-theme="modern"] .tile .value { font-family: var(--sans); font-weight: 700; }
+html[data-theme="modern"] .page-head { margin-bottom: 22px; }
+html[data-theme="modern"] th { font-family: var(--sans); padding: 12px 9px; }
+html[data-theme="modern"] td { padding: 10px 9px; }
+html[data-theme="modern"] td.mono { font-size: 12.5px; }
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="modern"] * { transition: none !important; }
+  html[data-theme="modern"] a.tile:hover { transform: none; }
+}
