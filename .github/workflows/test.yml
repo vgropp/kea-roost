@@ -17,9 +17,9 @@ jobs:
           apt-get install -y --no-install-recommends ca-certificates git gcc libc6-dev chromium
           apt-get install -y --no-install-recommends -t trixie-backports kea-dhcp4-server
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -27,7 +27,7 @@ jobs:
       - name: Compute the cache week
         run: echo "week=$(date +%G-%V)" >> "$GITHUB_ENV"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: oui
         with:
           path: internal/oui/oui.tsv.gz
@@ -45,16 +45,16 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
       - name: Compute the cache week
         run: echo "week=$(date +%G-%V)" >> "$GITHUB_ENV"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: oui
         with:
           path: internal/oui/oui.tsv.gz
@@ -73,7 +73,7 @@ jobs:
       - name: Run govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: lts/*
 
@@ -85,16 +85,16 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
       - name: Compute the cache week
         run: echo "week=$(date +%G-%V)" >> "$GITHUB_ENV"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: oui
         with:
           path: internal/oui/oui.tsv.gz
