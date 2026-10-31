@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kea Roost</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="theme-modern.css">
+  <script src="theme.js"></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#/dashboard"><span class="brand-mark">kea</span>roost</a>
+    <nav id="nav"></nav>
+    <div id="server-chip" class="server-chip"></div>
+    <select id="theme-select" aria-label="Theme">
+      <option value="classic">Classic</option>
+      <option value="modern">Modern</option>
+    </select>
+    <select id="mode-select" aria-label="Light or dark">
+      <option value="auto">Auto</option>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+    </select>
+  </header>
+  <main id="view"></main>
+  <dialog id="dialog"></dialog>
+</body>
+</html>

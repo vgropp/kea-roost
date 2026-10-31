@@ -1,0 +1,24 @@
+name: kea-roost
+
+services:
+  kea-roost:
+    build: .
+    image: kea-roost
+    restart: unless-stopped
+    env_file: .env
+    # The default bridge can reach services on the Docker host; a project network may not.
+    network_mode: bridge
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${MANAGER_PORT:-8080}:8080"
+    volumes:
+      - data:/data
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  data:

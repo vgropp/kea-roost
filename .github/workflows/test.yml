@@ -1,0 +1,108 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Debian offers Kea 3.0 through backports, Ubuntu does not
+    container: debian:trixie
+    steps:
+      - name: Install Kea and Chromium
+        run: |
+          echo "deb http://deb.debian.org/debian trixie-backports main" > /etc/apt/sources.list.d/backports.list
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git gcc libc6-dev chromium
+          apt-get install -y --no-install-recommends -t trixie-backports kea-dhcp4-server
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The vendor table is not in the repository and its source changes weekly.
+      - name: Compute the cache week
+        run: echo "week=$(date +%G-%V)" >> "$GITHUB_ENV"
+
+      - uses: actions/cache@v4
+        id: oui
+        with:
+          path: internal/oui/oui.tsv.gz
+          key: oui-${{ env.week }}
+
+      - name: Fetch the vendor table
+        if: steps.oui.outputs.cache-hit != 'true'
+        run: go run ./cmd/oui-update
+
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go test -tags kea ./internal/manager
+      - run: go test -tags e2e ./internal/web
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Compute the cache week
+        run: echo "week=$(date +%G-%V)" >> "$GITHUB_ENV"
+
+      - uses: actions/cache@v4
+        id: oui
+        with:
+          path: internal/oui/oui.tsv.gz
+          key: oui-${{ env.week }}
+
+      - name: Fetch the vendor table
+        if: steps.oui.outputs.cache-hit != 'true'
+        run: go run ./cmd/oui-update
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+
+      - name: Run staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 -tags e2e,kea ./...
+
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Check JavaScript syntax
+        run: |
+          node --check internal/web/static/app.js
+          node --check internal/web/static/theme.js
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Compute the cache week
+        run: echo "week=$(date +%G-%V)" >> "$GITHUB_ENV"
+
+      - uses: actions/cache@v4
+        id: oui
+        with:
+          path: internal/oui/oui.tsv.gz
+          key: oui-${{ env.week }}
+
+      - name: Fetch the vendor table
+        if: steps.oui.outputs.cache-hit != 'true'
+        run: go run ./cmd/oui-update
+
+      - name: Build the image
+        run: docker build -t kea-roost .
