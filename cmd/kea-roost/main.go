@@ -19,10 +19,19 @@ import (
 	"github.com/vgropp/kea-roost/internal/web"
 )
 
+// version is set when a release is built.
+var version = "dev"
+
 func main() {
 	run := run
-	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		run = healthcheck
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "healthcheck":
+			run = healthcheck
+		case "version":
+			fmt.Println(version)
+			return
+		}
 	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "kea-roost:", err)
@@ -52,6 +61,7 @@ func run() error {
 		return err
 	}
 	mgr := manager.New(client, store, cfg.ServerName)
+	mgr.SetVersion(version)
 	for _, p := range cfg.Peers {
 		options.URL = p.URL
 		peer, err := kea.NewClient(options)
@@ -88,7 +98,7 @@ func run() error {
 	if !cfg.WriteEnabled() {
 		slog.Warn("no login configured, running read-only")
 	}
-	slog.Info("listening", "address", cfg.Listen, "kea", cfg.KeaURL)
+	slog.Info("listening", "version", version, "address", cfg.Listen, "kea", cfg.KeaURL)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

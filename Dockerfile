@@ -1,9 +1,14 @@
-FROM golang:1.27-alpine AS build
+# The compiler runs natively, so that a release does not emulate other platforms.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /kea-roost ./cmd/kea-roost \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+      -ldflags="-s -w -X main.version=$VERSION" -o /kea-roost ./cmd/kea-roost \
     && mkdir /data
 
 FROM scratch

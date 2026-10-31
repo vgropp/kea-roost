@@ -2,7 +2,10 @@ name: ci
 
 on:
   push:
+    branches: ["**"]
   pull_request:
+  # The release workflow runs these jobs before it publishes anything.
+  workflow_call:
 
 jobs:
   test:

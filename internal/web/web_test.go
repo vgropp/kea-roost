@@ -356,3 +356,10 @@ func TestFrontendIsAlwaysRevalidated(t *testing.T) {
 		t.Fatalf("Cache-Control: %q", got)
 	}
 }
+
+func TestMetaNamesTheVersion(t *testing.T) {
+	_, srv := setup(t, web.Auth{})
+	if _, body := do(t, srv, "GET", "/api/meta", "", false); !strings.Contains(body, `"version"`) {
+		t.Fatalf("meta: %s", body)
+	}
+}

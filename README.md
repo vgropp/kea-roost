@@ -91,6 +91,20 @@ The pictures show invented devices.
 
 ## Install with Docker Compose
 
+Images for `linux/amd64` and `linux/arm64` are published to the GitHub Container Registry:
+
+    curl -LO https://raw.githubusercontent.com/vgropp/kea-roost/main/compose.image.yaml
+    curl -L -o .env https://raw.githubusercontent.com/vgropp/kea-roost/main/.env.example
+    # set KEA_URL and the passwords in .env
+    docker compose -f compose.image.yaml up -d
+
+`latest` follows the newest release. To stay on one, set `KEA_ROOST_VERSION=0.8` for a
+release line or `KEA_ROOST_VERSION=0.8.0` for exactly one version in `.env`.
+`KEA_ROOST_VERSION=snapshot` follows every tested commit on `main`, for trying out what
+comes next.
+
+To build from source instead:
+
     go run ./cmd/oui-update  # fetches the vendor table, needed once
     cp .env.example .env     # then set KEA_URL and the passwords
     docker compose up -d --build
