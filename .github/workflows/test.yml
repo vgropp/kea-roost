@@ -25,13 +25,14 @@ jobs:
 
       # The vendor table is not in the repository and its source changes weekly.
       - name: Compute the cache week
-        run: echo "week=$(date +%G-%V)" >> "$GITHUB_ENV"
+        id: week
+        run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v6
         id: oui
         with:
           path: internal/oui/oui.tsv.gz
-          key: oui-${{ env.week }}
+          key: oui-${{ steps.week.outputs.week }}
 
       - name: Fetch the vendor table
         if: steps.oui.outputs.cache-hit != 'true'
@@ -53,13 +54,14 @@ jobs:
           go-version: stable
 
       - name: Compute the cache week
-        run: echo "week=$(date +%G-%V)" >> "$GITHUB_ENV"
+        id: week
+        run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v6
         id: oui
         with:
           path: internal/oui/oui.tsv.gz
-          key: oui-${{ env.week }}
+          key: oui-${{ steps.week.outputs.week }}
 
       - name: Fetch the vendor table
         if: steps.oui.outputs.cache-hit != 'true'
@@ -93,13 +95,14 @@ jobs:
           go-version-file: go.mod
 
       - name: Compute the cache week
-        run: echo "week=$(date +%G-%V)" >> "$GITHUB_ENV"
+        id: week
+        run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v6
         id: oui
         with:
           path: internal/oui/oui.tsv.gz
-          key: oui-${{ env.week }}
+          key: oui-${{ steps.week.outputs.week }}
 
       - name: Fetch the vendor table
         if: steps.oui.outputs.cache-hit != 'true'
