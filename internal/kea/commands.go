@@ -311,3 +311,12 @@ func (c *Client) HAHeartbeat(ctx context.Context, serverName string) (*Heartbeat
 	}
 	return &h, nil
 }
+
+// HACommand sends a command that operates HA and returns the answer of Kea.
+func (c *Client) HACommand(ctx context.Context, command string, args map[string]any) (string, error) {
+	r, err := c.call(ctx, command, args)
+	if err != nil {
+		return "", err
+	}
+	return r.Text, nil
+}

@@ -217,6 +217,11 @@ func applySubnet(raw map[string]any, subnet *kea.Subnet, pools []kea.Pool, in *S
 		}
 	}
 
+	prepareSubnetUpdate(raw)
+}
+
+// prepareSubnetUpdate removes what subnet4-update refuses but subnet4-get reports.
+func prepareSubnetUpdate(raw map[string]any) {
 	delete(raw, "reservations")
 	for _, key := range []string{"4o6-interface", "4o6-interface-id", "4o6-subnet"} {
 		if raw[key] == "" {
@@ -256,8 +261,8 @@ func (m *Manager) UpdateSubnet(ctx context.Context, user string, id int64, in Su
 		target:       fmt.Sprintf("subnet %d, %s", id, subnet.Subnet),
 		backupReason: "subnet-update",
 		warnings:     warnings,
-		mutate: func(ctx context.Context) error {
-			raw, err := m.kea.SubnetGet(ctx, id)
+		mutate: func(ctx context.Context, k *kea.Client) error {
+			raw, err := k.SubnetGet(ctx, id)
 			if err != nil {
 				return err
 			}
@@ -265,10 +270,10 @@ func (m *Manager) UpdateSubnet(ctx context.Context, user string, id int64, in Su
 				return errors.New("subnet is missing in Kea")
 			}
 			applySubnet(raw, subnet, pools, &in)
-			return m.kea.SubnetUpdate(ctx, raw)
+			return k.SubnetUpdate(ctx, raw)
 		},
-		verify: func(ctx context.Context) error {
-			raw, err := m.kea.SubnetGet(ctx, id)
+		verify: func(ctx context.Context, k *kea.Client) error {
+			raw, err := k.SubnetGet(ctx, id)
 			if err != nil {
 				return err
 			}

@@ -89,6 +89,16 @@ func start(t *testing.T) *browser {
 	}
 	mgr := manager.New(client, store, "primary")
 	mgr.SetARPMonitor(monitor.URL, 7)
+	peer := keatest.New()
+	seed(peer)
+	peer.Hosts = append(peer.Hosts, map[string]any{"subnet-id": 0, "hw-address": "00:00:0c:00:00:fe", "ip-address": "192.0.2.250"})
+	peerSrv := httptest.NewServer(peer)
+	t.Cleanup(peerSrv.Close)
+	peerClient, err := kea.NewClient(kea.Options{URL: peerSrv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.AddPeer("standby", peerClient)
 	dashboard := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if dashboardAnswer != "" {
 			fmt.Fprint(w, dashboardAnswer)
@@ -209,7 +219,7 @@ func TestDashboard(t *testing.T) {
 			t.Errorf("column %s missing in %s", column, head)
 		}
 	}
-	rows := b.text(`document.querySelector('.table-wrap').innerText`)
+	rows := b.text(`[...document.querySelectorAll('.table-wrap')].at(-1).innerText`)
 	if !strings.Contains(rows, "active") || !strings.Contains(rows, "reserved") || !strings.Contains(rows, "new") {
 		t.Errorf("recent leases: %s", rows)
 	}
@@ -529,4 +539,34 @@ func TestSubnetLinksToItsReservations(t *testing.T) {
 	}
 	b.exec(`document.querySelector('dl a').click()`)
 	b.poll(`document.querySelector('h1')?.textContent === 'Reservations'`)
+}
+
+func TestServersShowDifferencesAndCopyThem(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/servers"))
+	b.poll(`document.querySelectorAll('.server-card').length === 2`)
+	b.poll(`document.querySelector('.server-card:nth-child(2)').textContent.includes('1 difference')`)
+	b.exec(`[...document.querySelectorAll('.server-card button')].find(x => x.textContent === 'Copy from primary').click()`)
+	b.poll(`document.querySelector('dialog')?.textContent.includes('Make standby match the primary')`)
+	b.exec(`[...document.querySelectorAll('dialog button')].find(x => x.textContent === 'Copy').click()`)
+	b.poll(`document.querySelector('dialog')?.textContent.includes('Change succeeded')`)
+	b.exec(`[...document.querySelectorAll('dialog button')].find(x => x.textContent === 'Close').click()`)
+	b.poll(`document.querySelector('.server-card:nth-child(2)')?.textContent.includes('in sync')`)
+}
+
+func TestDashboardListsBothServers(t *testing.T) {
+	b := start(t)
+	b.open("dashboard", "Dashboard")
+	b.poll(`[...document.querySelectorAll('h2')].some(x => x.textContent === 'Servers')`)
+	b.poll(`document.body.innerText.includes('standby') && document.body.innerText.includes('1 differ')`)
+}
+
+func TestHAPageOperatesAServer(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/ha"))
+	b.poll(`[...document.querySelectorAll('button')].some(x => x.textContent === 'Start maintenance')`)
+	b.exec(`[...document.querySelectorAll('.server-card')].find(x => x.textContent.includes('standby')).querySelector('button').click()`)
+	b.poll(`document.querySelector('dialog')?.textContent.includes('takes over all DHCP traffic')`)
+	b.exec(`document.querySelector('dialog button.solid').click()`)
+	b.poll(`document.querySelector('dialog h2')?.textContent === 'Change succeeded'`)
 }

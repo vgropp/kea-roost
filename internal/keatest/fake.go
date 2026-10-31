@@ -208,6 +208,20 @@ func (s *Server) handle(command string, args map[string]any) (int, string, any) 
 		return 3, "Class not found", nil
 	case "version-get":
 		return 0, s.Version, nil
+	case "ha-maintenance-start":
+		s.setHAState("partner-in-maintenance")
+		return 0, "Server is now in the partner-in-maintenance state.", nil
+	case "ha-maintenance-cancel":
+		s.setHAState("hot-standby")
+		return 0, "Server maintenance successfully canceled.", nil
+	case "ha-reset":
+		s.setHAState("waiting")
+		return 0, "HA state machine reset.", nil
+	case "ha-sync":
+		if args["server-name"] == nil {
+			return 1, "'server-name' is mandatory", nil
+		}
+		return 0, "Lease database synchronization complete.", nil
 	case "status-get":
 		return 0, "", map[string]any{
 			"pid": 4711, "uptime": 86400, "reload": 3600,
@@ -297,6 +311,18 @@ func (s *Server) handle(command string, args map[string]any) (int, string, any) 
 		return 0, "Host deleted.", nil
 	}
 	return 2, fmt.Sprintf("'%s' command not supported.", command), nil
+}
+
+// SetHAState changes the state the server reports as its own.
+func (s *Server) SetHAState(state string) {
+	s.Lock()
+	defer s.Unlock()
+	s.setHAState(state)
+}
+
+func (s *Server) setHAState(state string) {
+	servers := s.HA[0].(map[string]any)["ha-servers"].(map[string]any)
+	servers["local"].(map[string]any)["state"] = state
 }
 
 func (s *Server) find(subnet, idType, id any) int {

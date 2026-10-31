@@ -129,17 +129,17 @@ func (m *Manager) CreateClass(ctx context.Context, user string, in ClassInput) (
 		action:       "class-add",
 		target:       in.Name,
 		backupReason: "class-add",
-		mutate: func(ctx context.Context) error {
+		mutate: func(ctx context.Context, k *kea.Client) error {
 			entry := map[string]any{"name": in.Name}
 			classEntry(entry, &in)
-			return m.kea.ClassAdd(ctx, entry)
+			return k.ClassAdd(ctx, entry)
 		},
-		verify: func(ctx context.Context) error { return m.verifyClass(ctx, in.Name) },
+		verify: func(ctx context.Context, k *kea.Client) error { return verifyClass(ctx, k, in.Name) },
 	}), nil
 }
 
-func (m *Manager) verifyClass(ctx context.Context, name string) error {
-	entry, err := m.kea.ClassGet(ctx, name)
+func verifyClass(ctx context.Context, k *kea.Client, name string) error {
+	entry, err := k.ClassGet(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -172,11 +172,11 @@ func (m *Manager) UpdateClass(ctx context.Context, user, name string, in ClassIn
 		action:       "class-update",
 		target:       name,
 		backupReason: "class-update",
-		mutate: func(ctx context.Context) error {
+		mutate: func(ctx context.Context, k *kea.Client) error {
 			classEntry(entry, &in)
-			return m.kea.ClassUpdate(ctx, entry)
+			return k.ClassUpdate(ctx, entry)
 		},
-		verify: func(ctx context.Context) error { return m.verifyClass(ctx, name) },
+		verify: func(ctx context.Context, k *kea.Client) error { return verifyClass(ctx, k, name) },
 	}), nil
 }
 
@@ -216,9 +216,9 @@ func (m *Manager) DeleteClass(ctx context.Context, user, name string) (*Result, 
 		action:       "class-del",
 		target:       name,
 		backupReason: "class-del",
-		mutate:       func(ctx context.Context) error { return m.kea.ClassDel(ctx, name) },
-		verify: func(ctx context.Context) error {
-			entry, err := m.kea.ClassGet(ctx, name)
+		mutate:       func(ctx context.Context, k *kea.Client) error { return k.ClassDel(ctx, name) },
+		verify: func(ctx context.Context, k *kea.Client) error {
+			entry, err := k.ClassGet(ctx, name)
 			if err != nil {
 				return err
 			}

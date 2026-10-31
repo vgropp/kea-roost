@@ -54,7 +54,8 @@ func (e *ValidationError) Error() string { return strings.Join(e.Problems, "; ")
 
 // halfDoneError means a change with two steps stopped after the first one.
 type halfDoneError struct {
-	err error
+	err     error
+	message string
 }
 
 func (e *halfDoneError) Error() string { return e.err.Error() }
@@ -87,6 +88,7 @@ type ReservationInput struct {
 var (
 	macPattern        = regexp.MustCompile(`^[0-9a-fA-F]{2}([:-][0-9a-fA-F]{2}){5}$`)
 	identifierPattern = regexp.MustCompile(`^([0-9a-fA-F]{2}([:-]?[0-9a-fA-F]{2})*|'[^']+')$`)
+	nonBackupName     = regexp.MustCompile(`[^a-z-]`)
 	hostnamePattern   = regexp.MustCompile(`^[a-zA-Z0-9_]([a-zA-Z0-9_-]*[a-zA-Z0-9_])?(\.[a-zA-Z0-9_]([a-zA-Z0-9_-]*[a-zA-Z0-9_])?)*\.?$`)
 )
 
@@ -285,74 +287,106 @@ func (in *ReservationInput) apply(h kea.Host) {
 // change runs one modification of the Kea configuration: backup, change,
 // config-write, verification, audit. It stops at the first failure and never
 // tries to undo anything, because after an error the state of Kea is not known.
+// With peers it runs on one server after the other, primary first.
 type change struct {
 	user, action, target, backupReason string
 	warnings                           []string
-	mutate                             func(context.Context) error
-	verify                             func(context.Context) error
+	mutate                             func(context.Context, *kea.Client) error
+	verify                             func(context.Context, *kea.Client) error
 }
 
 func (m *Manager) run(ctx context.Context, c change) *Result {
+	return m.runOn(ctx, m.servers(), c)
+}
+
+func (m *Manager) runOn(ctx context.Context, servers []server, c change) *Result {
 	res := &Result{Status: StatusOK, Steps: []Step{}, Warnings: slices.Clip(c.warnings)}
 	if res.Warnings == nil {
 		res.Warnings = []string{}
 	}
-	step := func(name string, err error) bool {
-		s := Step{Name: name, OK: err == nil}
-		if err != nil {
-			s.Message = err.Error()
+	done := []string{}
+	for _, s := range servers {
+		status, message := m.applyOn(ctx, s, c, res)
+		if status == StatusOK {
+			done = append(done, s.name)
+			continue
 		}
-		res.Steps = append(res.Steps, s)
+		res.Status, res.Message = status, message
+		// Nothing is undone: the Servers page shows the difference.
+		if len(done) > 0 {
+			res.Status = StatusPartial
+			res.Message = fmt.Sprintf("Applied on %s, stopped at %s: %s Compare and sync on the Servers page.", strings.Join(done, ", "), s.name, message)
+		}
+		return m.finish(c, res)
+	}
+	res.Message = "Change applied, saved and verified."
+	if len(done) > 1 {
+		res.Message = fmt.Sprintf("Change applied, saved and verified on %s.", strings.Join(done, ", "))
+	}
+	return m.finish(c, res)
+}
+
+// applyOn runs a change on one server and adds its steps to res.
+func (m *Manager) applyOn(ctx context.Context, s server, c change, res *Result) (Status, string) {
+	step := func(name string, err error) bool {
+		if len(m.peers) > 0 {
+			name = s.name + ": " + name
+		}
+		st := Step{Name: name, OK: err == nil}
+		if err != nil {
+			st.Message = err.Error()
+		}
+		res.Steps = append(res.Steps, st)
 		return err == nil
 	}
 
-	config, err := m.kea.ConfigGet(ctx)
+	config, err := s.client.ConfigGet(ctx)
 	if err == nil {
 		if lossy := kea.LossyOptions(config); len(lossy) > 0 {
 			step("Check configuration", errors.New(strings.Join(lossy, ", ")))
-			res.Status = StatusFailed
-			res.Message = fmt.Sprintf("Nothing was changed: config-write would erase the value of %s. Remove the option from the Kea configuration or define it differently first.", strings.Join(lossy, ", "))
-			return m.finish(c, res)
+			return StatusFailed, fmt.Sprintf("Nothing was changed: config-write would erase the value of %s. Remove the option from the Kea configuration or define it differently first.", strings.Join(lossy, ", "))
 		}
-		res.Backup, err = m.store.SaveBackup(c.backupReason, config, m.now())
+		var backup string
+		backup, err = m.store.SaveBackup(m.backupReason(c, s), config, m.now())
+		if res.Backup == "" {
+			res.Backup = backup
+		}
 	}
 	if !step("Back up configuration", err) {
-		res.Status = StatusFailed
-		res.Message = "Nothing was changed because the backup failed."
-		return m.finish(c, res)
+		return StatusFailed, "Nothing was changed because the backup failed."
 	}
 
-	err = c.mutate(ctx)
+	err = c.mutate(ctx, s.client)
 	if !step("Apply change in Kea", err) {
 		var unreachable *kea.UnreachableError
 		var halfDone *halfDoneError
-		if errors.As(err, &halfDone) {
-			res.Status = StatusPartial
-			res.Message = "The old reservation was removed, but the new one could not be created: " + err.Error() + ". Create it again; the settings are in the backup."
-		} else if errors.As(err, &unreachable) {
-			res.Status = StatusPartial
-			res.Message = "Kea did not answer. It is unclear whether the change was applied. Please check the current state."
-		} else {
-			res.Status = StatusFailed
-			res.Message = "Kea rejected the change: " + err.Error()
+		switch {
+		case errors.As(err, &halfDone):
+			return StatusPartial, halfDone.message
+		case errors.As(err, &unreachable):
+			return StatusPartial, "Kea did not answer. It is unclear whether the change was applied. Please check the current state."
 		}
-		return m.finish(c, res)
+		return StatusFailed, "Kea rejected the change: " + err.Error()
 	}
 
-	if !step("Persist (config-write)", m.kea.ConfigWrite(ctx)) {
-		res.Status = StatusPartial
-		res.Message = "The change is active but NOT saved and will be lost when Kea restarts. Trigger the save again."
-		return m.finish(c, res)
+	if !step("Persist (config-write)", s.client.ConfigWrite(ctx)) {
+		return StatusPartial, "The change is active but NOT saved and will be lost when Kea restarts. Trigger the save again."
 	}
 
-	if !step("Verify result", c.verify(ctx)) {
-		res.Status = StatusPartial
-		res.Message = "The change was saved, but verification failed. Please check the current state."
-		return m.finish(c, res)
+	if !step("Verify result", c.verify(ctx, s.client)) {
+		return StatusPartial, "The change was saved, but verification failed. Please check the current state."
 	}
+	return StatusOK, ""
+}
 
-	res.Message = "Change applied, saved and verified."
-	return m.finish(c, res)
+// backupReason tells the backups of the servers apart. Backup names only hold
+// lowercase letters and dashes.
+func (m *Manager) backupReason(c change, s server) string {
+	if s.client == m.kea {
+		return c.backupReason
+	}
+	name := nonBackupName.ReplaceAllString(strings.ToLower(s.name), "-")
+	return c.backupReason + "-" + name
 }
 
 func (m *Manager) finish(c change, res *Result) *Result {
@@ -514,8 +548,8 @@ func target(subnetID int64, identifierType, identifier string) string {
 }
 
 // verifyHost compares the reservation in Kea with what it should be.
-func (m *Manager) verifyHost(ctx context.Context, in *ReservationInput) error {
-	h, err := m.kea.Reservation(ctx, in.SubnetID, in.IdentifierType, in.Identifier)
+func verifyHost(ctx context.Context, k *kea.Client, in *ReservationInput) error {
+	h, err := k.Reservation(ctx, in.SubnetID, in.IdentifierType, in.Identifier)
 	if err != nil {
 		return err
 	}
@@ -545,12 +579,12 @@ func (m *Manager) CreateReservation(ctx context.Context, user string, in Reserva
 		target:       target(in.SubnetID, in.IdentifierType, in.Identifier),
 		backupReason: "reservation-add",
 		warnings:     warnings,
-		mutate: func(ctx context.Context) error {
+		mutate: func(ctx context.Context, k *kea.Client) error {
 			h := kea.Host{}
 			in.apply(h)
-			return m.kea.AddReservation(ctx, h)
+			return k.AddReservation(ctx, h)
 		},
-		verify: func(ctx context.Context) error { return m.verifyHost(ctx, &in) },
+		verify: func(ctx context.Context, k *kea.Client) error { return verifyHost(ctx, k, &in) },
 	}), nil
 }
 
@@ -597,11 +631,11 @@ func (m *Manager) UpdateReservation(ctx context.Context, user string, in Reserva
 		target:       target(in.SubnetID, in.IdentifierType, in.Identifier),
 		backupReason: "reservation-update",
 		warnings:     warnings,
-		mutate: func(ctx context.Context) error {
+		mutate: func(ctx context.Context, k *kea.Client) error {
 			in.apply(existing)
-			return m.kea.UpdateReservation(ctx, existing)
+			return k.UpdateReservation(ctx, existing)
 		},
-		verify: func(ctx context.Context) error { return m.verifyHost(ctx, &in) },
+		verify: func(ctx context.Context, k *kea.Client) error { return verifyHost(ctx, k, &in) },
 	}), nil
 }
 
@@ -621,7 +655,7 @@ func (m *Manager) replaceReservation(ctx context.Context, user string, in Reserv
 		target:       fmt.Sprintf("%s -> %s %s", target(in.SubnetID, oldType, oldID), newType, newID),
 		backupReason: "reservation-replace",
 		warnings:     warnings,
-		mutate: func(ctx context.Context) error {
+		mutate: func(ctx context.Context, k *kea.Client) error {
 			host := kea.Host{}
 			for k, v := range existing {
 				if k != oldType {
@@ -629,23 +663,23 @@ func (m *Manager) replaceReservation(ctx context.Context, user string, in Reserv
 				}
 			}
 			in.apply(host)
-			if err := m.kea.DeleteReservation(ctx, in.SubnetID, oldType, oldID); err != nil {
+			if err := k.DeleteReservation(ctx, in.SubnetID, oldType, oldID); err != nil {
 				return err
 			}
-			if err := m.kea.AddReservation(ctx, host); err != nil {
-				return &halfDoneError{err}
+			if err := k.AddReservation(ctx, host); err != nil {
+				return &halfDoneError{err, "The old reservation was removed, but the new one could not be created: " + err.Error() + ". Create it again; the settings are in the backup."}
 			}
 			return nil
 		},
-		verify: func(ctx context.Context) error {
-			h, err := m.kea.Reservation(ctx, in.SubnetID, oldType, oldID)
+		verify: func(ctx context.Context, k *kea.Client) error {
+			h, err := k.Reservation(ctx, in.SubnetID, oldType, oldID)
 			if err != nil {
 				return err
 			}
 			if h != nil {
 				return errors.New("old reservation still exists")
 			}
-			return m.verifyHost(ctx, &in)
+			return verifyHost(ctx, k, &in)
 		},
 	}), nil
 }
@@ -673,11 +707,11 @@ func (m *Manager) DeleteReservation(ctx context.Context, user string, subnetID i
 		action:       "reservation-del",
 		target:       target(subnetID, identifierType, id),
 		backupReason: "reservation-del",
-		mutate: func(ctx context.Context) error {
-			return m.kea.DeleteReservation(ctx, subnetID, identifierType, id)
+		mutate: func(ctx context.Context, k *kea.Client) error {
+			return k.DeleteReservation(ctx, subnetID, identifierType, id)
 		},
-		verify: func(ctx context.Context) error {
-			h, err := m.kea.Reservation(ctx, subnetID, identifierType, id)
+		verify: func(ctx context.Context, k *kea.Client) error {
+			h, err := k.Reservation(ctx, subnetID, identifierType, id)
 			if err != nil {
 				return err
 			}
@@ -689,8 +723,9 @@ func (m *Manager) DeleteReservation(ctx context.Context, user string, subnetID i
 	}), nil
 }
 
-// DeleteLease removes a lease. Leases are not part of the configuration, so
-// there is no backup and no config-write.
+// DeleteLease removes a lease from every server, because HA only copies what the
+// DHCP service changes. Leases are not part of the configuration, so there is no
+// backup and no config-write.
 func (m *Manager) DeleteLease(ctx context.Context, user, ip string) error {
 	if addr, err := netip.ParseAddr(ip); err != nil || !addr.Is4() {
 		return &ValidationError{Problems: []string{fmt.Sprintf("invalid IPv4 address %q", ip)}}
@@ -706,6 +741,16 @@ func (m *Manager) DeleteLease(ctx context.Context, user, ip string) error {
 	case err != nil || !found:
 		status = StatusFailed
 	}
+	if err == nil && found {
+		// the partner may not know this lease, which is fine
+		for _, p := range m.peers {
+			if _, peerErr := p.client.DeleteLease(ctx, ip); peerErr != nil {
+				status = StatusPartial
+				err = fmt.Errorf("deleted on %s, but not on %s: %w", m.serverName, p.name, peerErr)
+				break
+			}
+		}
+	}
 	auditErr := m.store.Audit(AuditEntry{Time: m.now(), User: user, Action: "lease4-del", Target: ip, Status: status})
 	if auditErr != nil {
 		slog.Error("audit log", "error", auditErr)
@@ -719,21 +764,30 @@ func (m *Manager) DeleteLease(ctx context.Context, user, ip string) error {
 	return nil
 }
 
-// Persist repeats config-write after a failed change.
+// Persist repeats config-write after a failed change. It tries every server, so
+// that one being down does not keep the others from saving.
 func (m *Manager) Persist(ctx context.Context, user string) *Result {
 	ctx, cancel := detached(ctx)
 	defer cancel()
 	m.writeMu.Lock()
 	defer m.writeMu.Unlock()
 
-	res := &Result{Status: StatusOK, Message: "Configuration saved.", Warnings: []string{}}
-	err := m.kea.ConfigWrite(ctx)
-	s := Step{Name: "Persist (config-write)", OK: err == nil}
-	if err != nil {
-		s.Message = err.Error()
-		res.Status = StatusFailed
-		res.Message = "Saving failed: " + err.Error()
+	res := &Result{Status: StatusOK, Message: "Configuration saved.", Warnings: []string{}, Steps: []Step{}}
+	for _, srv := range m.servers() {
+		err := srv.client.ConfigWrite(ctx)
+		name := "Persist (config-write)"
+		if len(m.peers) > 0 {
+			name = srv.name + ": " + name
+		}
+		s := Step{Name: name, OK: err == nil}
+		if err != nil {
+			s.Message = err.Error()
+			if res.Status == StatusOK {
+				res.Status = StatusFailed
+				res.Message = "Saving failed: " + err.Error()
+			}
+		}
+		res.Steps = append(res.Steps, s)
 	}
-	res.Steps = []Step{s}
 	return m.finish(change{user: user, action: "config-write", target: "configuration"}, res)
 }

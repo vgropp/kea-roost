@@ -66,6 +66,9 @@ func New(mgr *manager.Manager, auth Auth, basePath string) http.Handler {
 	mux.HandleFunc("PUT /api/classes/{name}", s.writer(s.updateClass))
 	mux.HandleFunc("DELETE /api/classes/{name}", s.writer(s.deleteClass))
 	mux.HandleFunc("POST /api/config/write", s.writer(s.persist))
+	mux.HandleFunc("GET /api/servers", s.servers)
+	mux.HandleFunc("POST /api/servers/{name}/ha/{action}", s.writer(s.haAction))
+	mux.HandleFunc("POST /api/servers/{name}/sync", s.writer(s.syncServer))
 	mux.HandleFunc("GET /api/audit", s.writer(s.audit))
 	mux.HandleFunc("GET /api/backups", s.writer(s.backups))
 	mux.HandleFunc("GET /api/backups/{name}", s.writer(s.backup))
@@ -197,6 +200,7 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 		"serverName": s.mgr.ServerName(),
 		"writable":   s.auth.User != "",
 		"devices":    s.mgr.DevicesEnabled(),
+		"peers":      s.mgr.HasPeers(),
 		"user":       user(r),
 	})
 }
@@ -433,6 +437,28 @@ func (s *server) deleteClass(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) persist(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, s.mgr.Persist(r.Context(), user(r)))
+}
+
+func (s *server) servers(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.mgr.Servers(r.Context()))
+}
+
+func (s *server) haAction(w http.ResponseWriter, r *http.Request) {
+	res, err := s.mgr.RunHA(r.Context(), user(r), r.PathValue("name"), r.PathValue("action"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeResult(w, res)
+}
+
+func (s *server) syncServer(w http.ResponseWriter, r *http.Request) {
+	res, err := s.mgr.SyncServer(r.Context(), user(r), r.PathValue("name"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeResult(w, res)
 }
 
 func (s *server) audit(w http.ResponseWriter, _ *http.Request) {

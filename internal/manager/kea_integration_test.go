@@ -375,3 +375,214 @@ func TestRealKeaKeepsVendorSubOption(t *testing.T) {
 		t.Errorf("sub-option lost: %s", text)
 	}
 }
+
+func startPair(t *testing.T) (primary, peer *keaServer) {
+	t.Helper()
+	primary, peer = startKea(t, dnsOption), startKea(t, dnsOption)
+	primary.mgr.AddPeer("standby", peer.client)
+	return primary, peer
+}
+
+func peerDifferences(t *testing.T, s *keaServer) []Difference {
+	t.Helper()
+	list := s.mgr.Servers(context.Background())
+	if len(list.Servers) != 2 || !list.Servers[1].Reachable {
+		t.Fatalf("servers: %+v", list.Servers)
+	}
+	return list.Servers[1].Differences
+}
+
+// Two servers with the same file must look the same, or the Servers page would
+// report differences that are none.
+func TestTwoServersStayInStep(t *testing.T) {
+	primary, peer := startPair(t)
+	ctx := context.Background()
+	if d := peerDifferences(t, primary); len(d) != 0 {
+		t.Fatalf("fresh servers differ: %+v", d)
+	}
+
+	in := ReservationInput{SubnetID: 0, IdentifierType: "hw-address", Identifier: "02:00:00:00:00:21", IPAddress: "192.0.2.21", Hostname: "new", Classes: []string{"direct-dns"}, Comment: "note"}
+	res, err := primary.mgr.CreateReservation(ctx, "alice", in)
+	primary.ok(res, err)
+	res, err = primary.mgr.CreateClass(ctx, "alice", ClassInput{Name: "ntp", Options: []ReservationOption{{Name: "ntp-servers", Data: "192.0.2.3"}}})
+	primary.ok(res, err)
+	res, err = primary.mgr.UpdateSubnet(ctx, "alice", 1, SubnetInput{Pools: []string{"192.0.2.100-192.0.2.150"}, Gateways: []string{"192.0.2.1"}, DNSServers: []string{"192.0.2.53"}, ValidLifetime: 7200})
+	primary.ok(res, err)
+	moved := in
+	moved.NewIdentifierType, moved.NewIdentifier = "hw-address", "02:00:00:00:00:22"
+	res, err = primary.mgr.UpdateReservation(ctx, "alice", moved)
+	primary.ok(res, err)
+	in.Identifier = moved.NewIdentifier
+	res, err = primary.mgr.UpdateClass(ctx, "alice", "ntp", ClassInput{Options: []ReservationOption{{Name: "ntp-servers", Data: "192.0.2.4"}}})
+	primary.ok(res, err)
+	if d := peerDifferences(t, primary); len(d) != 0 {
+		t.Fatalf("servers differ after changes: %+v", d)
+	}
+
+	// the peer file must hold the change, and its restart must keep it
+	peer.restart()
+	if h, err := peer.client.Reservation(ctx, 0, "hw-address", in.Identifier); err != nil || h == nil {
+		t.Fatalf("reservation after restart: %v %v", h, err)
+	}
+	if d := peerDifferences(t, primary); len(d) != 0 {
+		t.Fatalf("servers differ after a restart: %+v", d)
+	}
+}
+
+func TestSyncRepairsARealServer(t *testing.T) {
+	primary, peer := startPair(t)
+	ctx := context.Background()
+
+	// drift on the peer, made behind the back of the manager
+	if err := peer.client.DeleteReservation(ctx, 0, "hw-address", "02:00:00:00:00:02"); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.client.AddReservation(ctx, kea.Host{"subnet-id": int64(0), "hw-address": "02:00:00:00:00:99", "ip-address": "192.0.2.99"}); err != nil {
+		t.Fatal(err)
+	}
+	h, err := peer.client.Reservation(ctx, 0, "hw-address", "02:00:00:00:00:01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h["hostname"] = "changed"
+	if err := peer.client.UpdateReservation(ctx, h); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.client.ClassAdd(ctx, map[string]any{"name": "stray"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.client.ClassDel(ctx, "stray"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := peer.client.SubnetGet(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepareSubnetUpdate(raw)
+	raw["pools"] = []any{map[string]any{"pool": "192.0.2.200-192.0.2.210"}}
+	if err := peer.client.SubnetUpdate(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+	if d := peerDifferences(t, primary); len(d) != 4 {
+		t.Fatalf("differences: %+v", d)
+	}
+
+	res, err := primary.mgr.SyncServer(ctx, "alice", "standby")
+	primary.ok(res, err)
+	if d := peerDifferences(t, primary); len(d) != 0 {
+		t.Fatalf("left: %+v", d)
+	}
+	peer.restart()
+	if d := peerDifferences(t, primary); len(d) != 0 {
+		t.Fatalf("left after restart: %+v", d)
+	}
+}
+
+func TestStoppedPeerStopsAtThePrimary(t *testing.T) {
+	primary, peer := startPair(t)
+	ctx := context.Background()
+	peer.stop()
+	in := ReservationInput{SubnetID: 0, IdentifierType: "hw-address", Identifier: "02:00:00:00:00:21", IPAddress: "192.0.2.21"}
+	res, err := primary.mgr.CreateReservation(ctx, "alice", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != StatusPartial {
+		t.Fatalf("result: %+v", res)
+	}
+	peer.start()
+	if d := peerDifferences(t, primary); len(d) != 1 || d[0].Change != "missing" {
+		t.Fatalf("differences: %+v", d)
+	}
+	res, err = primary.mgr.SyncServer(ctx, "alice", "standby")
+	primary.ok(res, err)
+	if d := peerDifferences(t, primary); len(d) != 0 {
+		t.Fatalf("left: %+v", d)
+	}
+}
+
+const haHook = `{ "library": "libdhcp_class_cmds.so" },
+      { "library": "libdhcp_ha.so", "parameters": { "high-availability": [ {
+        "this-server-name": %q, "mode": "hot-standby",
+        "heartbeat-delay": 500, "max-response-delay": 2000, "max-ack-delay": 500, "max-unacked-clients": 0,
+        "peers": [
+          { "name": "one", "url": "http://127.0.0.1:%d/", "role": "primary", "auto-failover": true },
+          { "name": "two", "url": "http://127.0.0.1:%d/", "role": "standby", "auto-failover": true }
+        ] } ] } }`
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	return listener.Addr().(*net.TCPAddr).Port
+}
+
+func enableHA(t *testing.T, s *keaServer, name string, one, two int) {
+	t.Helper()
+	data, err := os.ReadFile(s.conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook := fmt.Sprintf(haHook, name, one, two)
+	if err := os.WriteFile(s.conf, []byte(strings.Replace(string(data), `{ "library": "libdhcp_class_cmds.so" }`, hook, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.restart()
+}
+
+func (s *keaServer) awaitState(want string) {
+	s.t.Helper()
+	state := ""
+	for range 300 {
+		if status, err := s.client.Status(context.Background()); err == nil && len(status.HA) > 0 {
+			if state = status.HA[0].Servers.Local.State; state == want {
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	s.t.Fatalf("state is %s instead of %s", state, want)
+}
+
+func (s *keaServer) ha(name, action string) {
+	s.t.Helper()
+	s.ok(s.mgr.RunHA(context.Background(), "alice", name, action))
+}
+
+// Real HA between two processes: only this shows which server a command has to
+// reach, and that Kea accepts it in that state.
+func TestHAOperations(t *testing.T) {
+	a, b := startPair(t)
+	one, two := freePort(t), freePort(t)
+	enableHA(t, a, "one", one, two)
+	enableHA(t, b, "two", one, two)
+	a.awaitState("hot-standby")
+	b.awaitState("hot-standby")
+
+	// the primary goes down for maintenance, the standby takes over
+	a.ha("test", "maintenance")
+	a.awaitState("in-maintenance")
+	b.awaitState("partner-in-maintenance")
+	a.ha("test", "maintenance-cancel")
+	a.awaitState("hot-standby")
+	b.awaitState("hot-standby")
+
+	a.ha("standby", "maintenance")
+	b.awaitState("in-maintenance")
+	a.awaitState("partner-in-maintenance")
+	a.ha("standby", "maintenance-cancel")
+	a.awaitState("hot-standby")
+	b.awaitState("hot-standby")
+
+	a.ha("standby", "sync")
+	b.awaitState("hot-standby")
+	a.awaitState("hot-standby")
+
+	list := a.mgr.Servers(context.Background())
+	if h := list.Servers[1].HA; h == nil || h.Name != "two" || h.Partner != "one" {
+		t.Fatalf("ha: %+v", h)
+	}
+}

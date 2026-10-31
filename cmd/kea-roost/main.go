@@ -35,14 +35,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	client, err := kea.NewClient(kea.Options{
+	options := kea.Options{
 		URL:        cfg.KeaURL,
 		User:       cfg.KeaUser,
 		Password:   cfg.KeaPassword,
 		CAFile:     cfg.KeaCAFile,
 		ClientCert: cfg.KeaClientCert,
 		ClientKey:  cfg.KeaClientKey,
-	})
+	}
+	client, err := kea.NewClient(options)
 	if err != nil {
 		return err
 	}
@@ -51,6 +52,14 @@ func run() error {
 		return err
 	}
 	mgr := manager.New(client, store, cfg.ServerName)
+	for _, p := range cfg.Peers {
+		options.URL = p.URL
+		peer, err := kea.NewClient(options)
+		if err != nil {
+			return err
+		}
+		mgr.AddPeer(p.Name, peer)
+	}
 	if cfg.ARPMonitorURL != "" {
 		mgr.SetARPMonitor(cfg.ARPMonitorURL, cfg.ARPDays)
 	}
