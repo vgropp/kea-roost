@@ -3,7 +3,7 @@ module github.com/vgropp/kea-roost
 go 1.25
 
 require (
-	github.com/chromedp/cdproto v0.157.8
+	github.com/chromedp/cdproto v0.159.0
 	github.com/chromedp/chromedp v0.21.0
 )
 
