@@ -20,5 +20,21 @@
       ],
       "automerge": false
     }
+  ],
+  "postUpdateOptions": [
+    "gomodTidy"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Tools run with go run in the workflow",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "go run (?<depName>\\S+?)/cmd/\\S+?@(?<currentValue>v\\S+)"
+      ],
+      "datasourceTemplate": "go"
+    }
   ]
 }

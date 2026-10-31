@@ -47,9 +47,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The lint tools need a newer Go than the minimum in go.mod.
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: stable
 
       - name: Compute the cache week
         run: echo "week=$(date +%G-%V)" >> "$GITHUB_ENV"
