@@ -23,10 +23,6 @@ const arpMonitorTimeout = 30 * time.Second
 
 const maxARPMonitorResponse = 16 << 20
 
-// Only a device seen this recently can conflict with a reservation. The monitor
-// keeps older sightings, and an address may well have changed hands since.
-const conflictMaxAge = 15 * time.Minute
-
 // ErrARPMonitorDisabled is returned when no ARP monitor is configured.
 var ErrARPMonitorDisabled = errors.New("ARP monitor is not configured")
 
@@ -40,18 +36,22 @@ type arpDevice struct {
 	LastSeen  time.Time `json:"last_seen"`
 }
 
-// SetARPMonitor enables the devices view. days is the window of devices to list.
-func (m *Manager) SetARPMonitor(url string, days int) {
-	m.arpURL, m.arpDays = strings.TrimRight(url, "/"), days
+// SetARPMonitor enables the devices view.
+func (m *Manager) SetARPMonitor(url string) {
+	m.arpURL = strings.TrimRight(url, "/")
 }
 
 // ARPMonitorEnabled reports whether an ARP monitor is configured.
 func (m *Manager) ARPMonitorEnabled() bool { return m.arpURL != "" }
 
 func (m *Manager) arpDevices(ctx context.Context) ([]arpDevice, error) {
+	return m.arpDevicesWithin(ctx, m.cfg().DevicesDays)
+}
+
+func (m *Manager) arpDevicesWithin(ctx context.Context, days int) ([]arpDevice, error) {
 	ctx, cancel := context.WithTimeout(ctx, arpMonitorTimeout)
 	defer cancel()
-	url := fmt.Sprintf("%s/api/current?days=%d", m.arpURL, m.arpDays)
+	url := fmt.Sprintf("%s/api/current?days=%d", m.arpURL, days)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -201,7 +201,8 @@ func (m *Manager) Devices(ctx context.Context) (*DeviceList, error) {
 		}
 		if reserved {
 			v.Reservation = reservationRef(host, v.IPAddress, mac)
-			if m.now().Sub(d.LastSeen) > conflictMaxAge {
+			// the monitor keeps older sightings, and an address may have changed hands
+			if m.now().Sub(d.LastSeen) > m.cfg().online() {
 				v.Reservation.Conflict = ""
 			}
 			if v.Reservation.Conflict != "" {

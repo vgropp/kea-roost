@@ -74,16 +74,20 @@ func run() error {
 		mgr.AddPeer(p.Name, peer)
 	}
 	if cfg.ARPMonitorURL != "" {
-		mgr.SetARPMonitor(cfg.ARPMonitorURL, cfg.ARPDays)
+		mgr.SetARPMonitor(cfg.ARPMonitorURL)
 	}
 	if cfg.APDashboardURL != "" {
 		mgr.SetAPDashboard(cfg.APDashboardURL)
+	}
+	if err := mgr.LoadSettings(); err != nil {
+		return err
 	}
 	handler := web.New(mgr, web.Auth{User: cfg.User, Password: cfg.Password}, cfg.BasePath)
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
 

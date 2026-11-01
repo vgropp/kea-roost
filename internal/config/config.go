@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -33,7 +32,6 @@ type Config struct {
 	Password       string
 	DataDir        string
 	ARPMonitorURL  string
-	ARPDays        int
 	APDashboardURL string
 	BasePath       string
 }
@@ -63,7 +61,6 @@ func Load(getenv func(string) string) (*Config, error) {
 		User:           getenv("MANAGER_USER"),
 		DataDir:        or(getenv("MANAGER_DATA_DIR"), "/var/lib/kea-roost"),
 		ARPMonitorURL:  getenv("ARPMONITOR_URL"),
-		ARPDays:        7,
 		APDashboardURL: getenv("APDASHBOARD_URL"),
 		HostsDir:       getenv("DNS_HOSTS_DIR"),
 	}
@@ -102,11 +99,6 @@ func Load(getenv func(string) string) (*Config, error) {
 	if c.APDashboardURL != "" && !isHTTPURL(c.APDashboardURL) {
 		return nil, fmt.Errorf("APDASHBOARD_URL %q is not an http(s) URL", c.APDashboardURL)
 	}
-	if text := getenv("ARPMONITOR_DAYS"); text != "" {
-		if c.ARPDays, err = strconv.Atoi(text); err != nil || c.ARPDays < 1 {
-			return nil, fmt.Errorf("ARPMONITOR_DAYS %q is not a positive number", text)
-		}
-	}
 	c.BasePath = strings.TrimRight(getenv("MANAGER_BASE_PATH"), "/")
 	if c.BasePath != "" && !strings.HasPrefix(c.BasePath, "/") {
 		return nil, fmt.Errorf("MANAGER_BASE_PATH %q must start with /", c.BasePath)
@@ -116,6 +108,9 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	if (c.User == "") != (c.Password == "") {
 		return nil, errors.New("MANAGER_USER and MANAGER_PASSWORD must be set together")
+	}
+	if c.Password == "change-me" {
+		return nil, errors.New("MANAGER_PASSWORD still holds the example value")
 	}
 	return c, nil
 }

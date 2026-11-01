@@ -21,6 +21,7 @@ function h(tag, attrs, ...children) {
 
 const view = document.getElementById('view');
 const dialog = document.getElementById('dialog');
+let dialogGeneration = 0;
 let meta = { writable: false, serverName: '' };
 
 async function api(method, path, body) {
@@ -189,9 +190,10 @@ dialog.addEventListener('click', event => {
   if (dialog.classList.contains('wide') && pressedOutside && outsideDialog(event)) closeDialog();
 });
 
-function closeDialog() { dialog.close(); dialog.replaceChildren(); dialog.classList.remove('wide'); }
+function closeDialog() { dialogGeneration++; dialog.close(); dialog.replaceChildren(); dialog.classList.remove('wide'); }
 
 function showDialog(...content) {
+  dialogGeneration++;
   dialog.classList.remove('wide');
   dialog.replaceChildren(...content.filter(Boolean));
   if (!dialog.open) dialog.showModal();
@@ -1185,12 +1187,17 @@ function clientBody(c) {
 async function clientDialog(id) {
   showDialog(closeButton(), h('h2', {}, id), h('p', { class: 'muted' }, 'Loading…'));
   dialog.classList.add('wide');
+  const opened = dialogGeneration;
+  // closing it, or opening something else, while it loads wins over a late answer
+  const current = () => opened === dialogGeneration && dialog.open;
   try {
     const c = await api('GET', 'clients/' + encodeURIComponent(id));
+    if (!current()) return;
     showDialog(...clientBody(c).filter(Boolean));
+    dialogGeneration = opened;
     dialog.classList.add('wide');
   } catch (err) {
-    showDialog(closeButton(), h('h2', {}, id), errorNote(err));
+    if (current()) showDialog(closeButton(), h('h2', {}, id), errorNote(err));
   }
 }
 
@@ -1215,8 +1222,48 @@ function checkPanel(title, checks) {
     h('ul', { class: 'checks' }, checks.map(c => h('li', {}, state(SEVERITY_KIND[c.severity], c.name), h('span', { class: 'detail' }, c.detail)))));
 }
 
+// Leads from a finding to its entry.
+function findingLink(f) {
+  if (f.page === 'client') return clientLink(f.query, f.target);
+  if (!f.page) return f.target;
+  return h('a', { href: f.query ? searchLink(f.page, f.query) : '#/' + f.page }, f.target);
+}
+
+function checkLabel(c) {
+  return c.server ? `${c.server}: ${c.name}` : c.name;
+}
+
+// The number on top opens the list behind it, problems first.
+function checkSummary(checks, open, expanded) {
+  const rank = { crit: 0, warn: 1, info: 2, ok: 3 };
+  const sorted = checks.toSorted((a, b) => rank[a.severity] - rank[b.severity]);
+  const passed = checks.filter(c => c.severity === 'ok').length;
+  const text = open ? `${open} open points, ${passed} checks passed` : `${passed} checks passed`;
+  const details = h('details', { class: 'check-list' },
+    h('summary', { title: sorted.map(c => `${checkLabel(c)}: ${c.detail}`).join('\n') }, text),
+    h('ul', { class: 'checks' }, sorted.map(c => h('li', {}, state(SEVERITY_KIND[c.severity], checkLabel(c)), h('span', { class: 'detail' }, c.detail)))));
+  details.open = expanded;
+  return details;
+}
+
+// Shows what the review looks at, also while it finds nothing.
+function ruleSummary(rules, expanded, remember) {
+  const run = rules.filter(r => !r.skipped);
+  const hits = run.filter(r => r.findings).length;
+  const result = r => r.skipped ? state('neutral', r.skipped)
+    : r.findings ? state('warn', r.findings === 1 ? '1 finding' : `${r.findings} findings`) : state('ok', 'nothing found');
+  const details = h('details', { class: 'check-list rule-list' },
+    h('summary', {}, `${run.length} rules checked, ${hits} with findings`),
+    h('ul', { class: 'checks' }, rules.map(r => h('li', {}, result(r), h('span', { class: 'detail' }, r.title)))));
+  details.open = expanded;
+  details.addEventListener('toggle', () => remember(details.open));
+  return details;
+}
+
 pages.health = () => {
   const body = h('div', {});
+  let listOpen = false;
+  let rulesOpen = false;
   const findings = dataTable({
     search: 'Search findings',
     empty: 'Nothing to report',
@@ -1226,7 +1273,7 @@ pages.health = () => {
         render: r => state(SEVERITY_KIND[r.severity], severityWord(r.severity)),
       },
       { key: 'area', label: 'Area', search: r => r.area },
-      { key: 'target', label: 'Entry', class: 'mono', search: r => r.target },
+      { key: 'target', label: 'Entry', class: 'mono', search: r => r.target, render: findingLink },
       { key: 'message', label: 'Finding', class: 'wrap', search: r => r.message },
     ],
     initialSort: 'severity',
@@ -1239,14 +1286,17 @@ pages.health = () => {
       const count = list => list.filter(x => x.severity === 'warn' || x.severity === 'crit').length;
       const open = count(r.checks) + count(r.findings);
       findings.setRows(r.findings);
+      const details = checkSummary(r.checks, open, listOpen);
+      details.addEventListener('toggle', () => { listOpen = details.open; });
       body.replaceChildren(
         h('div', { class: 'health-summary ' + SEVERITY_KIND[r.severity] },
           state(SEVERITY_KIND[r.severity], r.severity === 'ok' ? 'All good' : r.severity === 'crit' ? 'Needs attention' : 'Worth a look'),
-          h('span', { class: 'muted' }, open ? `${open} open points` : `${r.checks.length} checks passed`)),
+          details),
         h('div', { class: 'columns' }, [...groups].map(([name, checks]) => checkPanel(name, checks))),
         h('h2', {}, 'DHCP traffic'),
         r.traffic.length ? h('div', { class: 'columns' }, r.traffic.map(trafficCard)) : h('div', { class: 'panel empty' }, 'No statistics'),
         h('h2', {}, 'Configuration review'),
+        ruleSummary(r.rules, rulesOpen, value => { rulesOpen = value; }),
         findings.el);
     } catch (err) {
       body.replaceChildren(errorNote(err));
@@ -1254,6 +1304,35 @@ pages.health = () => {
   };
   view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Health'), refreshControls(load)), body);
   load();
+};
+
+pages.settings = () => {
+  const notice = h('div');
+  const groups = h('div', {});
+  const form = h('form', {
+    onsubmit: async event => {
+      event.preventDefault();
+      const values = {};
+      for (const input of form.querySelectorAll('input')) values[input.name] = Number(input.value);
+      try {
+        draw(await api('PUT', 'settings', values));
+        notice.replaceChildren(h('div', { class: 'note ok' }, 'Settings saved.'));
+      } catch (err) {
+        notice.replaceChildren(errorNote(err));
+      }
+    },
+  }, groups, h('div', { class: 'dialog-actions' }, h('button', { class: 'primary', type: 'submit' }, 'Save')));
+  const draw = fields => {
+    const names = [...new Set(fields.map(f => f.group))];
+    groups.replaceChildren(...names.map(name => h('div', { class: 'panel pad setting-group' }, h('h3', {}, name),
+      fields.filter(f => f.group === name).map(f => h('label', { class: 'setting' },
+        h('span', { class: 'setting-name' }, f.label, f.changed ? h('span', { class: 'tag', title: `Default: ${f.default}` }, 'changed') : null),
+        h('span', { class: 'setting-value' },
+          h('input', { class: 'mono-input', type: 'number', name: f.key, min: String(f.min), max: String(f.max), value: f.value, required: true }), ' ', f.unit),
+        h('span', { class: 'muted setting-help' }, `${f.help} Default: ${f.default}.`))))));
+  };
+  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Settings')), notice, form);
+  api('GET', 'settings').then(draw).catch(err => notice.replaceChildren(errorNote(err)));
 };
 
 function updateChip(server) {
@@ -1297,7 +1376,7 @@ async function start() {
     [['leases', 'Leases'], ['reservations', 'Reservations'], meta.devices && ['devices', 'Devices']],
     [['classes', 'Classes'], ['subnets', 'Subnets']],
     [['ha', 'HA'], meta.peers && ['servers', 'Servers']],
-    [['health', 'Health'], meta.writable && ['audit', 'Audit log']],
+    [['health', 'Health'], meta.writable && ['audit', 'Audit log'], meta.writable && ['settings', 'Settings']],
   ];
   document.getElementById('nav').replaceChildren(...groups.map(group => h('div', { class: 'nav-group' },
     group.filter(Boolean).map(([page, label]) => h('a', { href: '#/' + page, 'data-page': page }, label)))));

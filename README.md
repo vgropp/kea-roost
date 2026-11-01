@@ -58,6 +58,8 @@ lease into a static DHCP reservation in two clicks.
 - **Health:** one page for every server: reachability, sockets, HA, clock, hooks,
   integrations, and DHCP traffic from Discover to Ack with drops, NAKs and failed
   allocations.
+- **Settings:** limits and time windows editable in the interface, see
+  [Settings](#settings).
 - **Configuration review:** finds what Kea accepts without complaint, such as ignored
   reservations, unused classes, duplicate addresses and overlapping pools.
 - **DNS names:** keeps a hosts file of all reservations for dnsmasq or another DNS
@@ -180,7 +182,6 @@ All settings come from environment variables.
 | `MANAGER_BASE_PATH` | Subpath behind a reverse proxy that does not strip it, e.g. `/kea-roost` | empty |
 | `MANAGER_DATA_DIR` | Backups and audit log | `/var/lib/kea-roost`, `/data` in the image |
 | `ARPMONITOR_URL` | Base URL of an [arpmonitor](https://github.com/vgropp/arpmonitor) with port and without path, enables the devices page | empty |
-| `ARPMONITOR_DAYS` | How many days back the devices page lists devices (optional) | `7` |
 
 `KEA_PASSWORD` and `MANAGER_PASSWORD` can instead be read from a file through
 `KEA_PASSWORD_FILE` and `MANAGER_PASSWORD_FILE`, for example a Docker secret.
@@ -270,6 +271,16 @@ Every peer needs the hooks of the primary, a control socket with the same login,
 and a configuration file the Kea user can write. Settings outside of these three
 areas, such as global options, are neither compared nor copied.
 
+## Settings
+
+The Settings page holds limits and time windows: how far back the devices page and the
+review look, when a device counts as online, and the thresholds of warnings. They are
+saved in `settings.json` in the data volume and apply at once. Values that are not
+changed there keep their default.
+
+Addresses, logins and other settings of the deployment stay in the environment and
+never end up in this file.
+
 ## DNS names for reservations
 
 Kea Roost can keep a hosts file of all reservations, so that a DNS server resolves the
@@ -335,7 +346,8 @@ counts as *probably* static, because a foreign DHCP server would look the same.
 
 ### Health
 
-The Health page runs its checks each time it loads, per server:
+The Health page runs its checks each time it loads, per server. The number on top opens
+the list of all checks, with open points first:
 
 | Area | What is checked |
 |---|---|
@@ -361,6 +373,25 @@ Kea starts happily with many mistakes. The review lists them, worst first:
 - **Notes:** classes that never apply, reserved addresses inside a pool, options set to
   the value they inherit anyway, subnets without a gateway or DNS server.
 
+With the [ARP monitor](#arpmonitor), the review also compares Kea with what is really on
+the network:
+
+- **Problems:** two devices online with one address, a device online with an address
+  reserved for another one.
+- **Warnings:** a device online with another address than its reservation or lease, an
+  address leased to another device, an online address inside a pool without a lease.
+- **Notes:** an active lease whose device has not been seen for an hour, a reservation
+  whose device was not seen for a year. The time spans are set on the Settings page.
+
+"Online" means seen within the last 15 minutes by default. Devices that sleep or stay silent can
+show up as notes. Clients the AP dashboard reports count as seen. Addresses are only
+compared for reservations by MAC address. If a source is unreachable or empty, including
+the AP dashboard, all of these rules say so instead of reporting nothing. Each finding
+links to its entry.
+
+The number above the findings opens the list of all rules with their results. Warnings
+in the log of Kea are not part of this, because its API does not offer them.
+
 A note is not a mistake. A reservation inside a pool works, for example; it can only
 collide with a client that got the address before.
 
@@ -385,9 +416,9 @@ with `--arp-scan-interval=5m` to also find silent devices and to make the last s
 time reflect what is online right now.
 
 `ARPMONITOR_URL` is the base URL, for example `http://host.docker.internal:8253`; Kea
-Roost appends the API path itself. `ARPMONITOR_DAYS` only sets the window of each
-query. How long data is kept is decided by the `--retention-days` flag of the monitor,
-so a larger window than that shows little more.
+Roost appends the API path itself. The [Settings](#settings) page sets how far back each
+query looks. How long data is kept is decided by the `--retention-days` flag of the
+monitor, so a larger window than that shows little more.
 
 ### openwrt-ap-dashboard
 

@@ -591,7 +591,7 @@ func TestDashboardReportsMissingHooks(t *testing.T) {
 
 func TestHAWarnings(t *testing.T) {
 	skew := int64(120)
-	w := remoteWarnings(&kea.HAServerRemote{ServerName: "b", InTouch: false, CommunicationInterrupted: true, LastState: "partner-down", ClockSkew: &skew})
+	w := remoteWarnings(&kea.HAServerRemote{ServerName: "b", InTouch: false, CommunicationInterrupted: true, LastState: "partner-down", ClockSkew: &skew}, defaultSettings().ClockSkewSeconds)
 	if len(w) != 4 {
 		t.Fatalf("got %+v", w)
 	}
@@ -688,5 +688,22 @@ func TestBackupNames(t *testing.T) {
 	list, err := e.mgr.Store().Backups()
 	if err != nil || len(list) != 1 {
 		t.Fatalf("got %v %v", list, err)
+	}
+}
+
+func TestLeaseDeleteWaitsForRunningChange(t *testing.T) {
+	e := setup(t)
+	e.fake.Leases = []map[string]any{{"ip-address": "192.0.2.100", "subnet-id": 1, "state": 0, "cltt": 1, "valid-lft": 7200}}
+	e.mgr.writeMu.Lock()
+	done := make(chan error, 1)
+	go func() { done <- e.mgr.DeleteLease(context.Background(), "alice", "192.0.2.100") }()
+	select {
+	case <-done:
+		t.Fatal("did not wait")
+	case <-time.After(50 * time.Millisecond):
+	}
+	e.mgr.writeMu.Unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

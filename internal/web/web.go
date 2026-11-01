@@ -68,6 +68,8 @@ func New(mgr *manager.Manager, auth Auth, basePath string) http.Handler {
 	mux.HandleFunc("POST /api/config/write", s.writer(s.persist))
 	mux.HandleFunc("GET /api/servers", s.servers)
 	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("GET /api/settings", s.settings)
+	mux.HandleFunc("PUT /api/settings", s.writer(s.updateSettings))
 	mux.HandleFunc("GET /api/clients/{id}", s.client)
 	mux.HandleFunc("POST /api/servers/{name}/ha/{action}", s.writer(s.haAction))
 	mux.HandleFunc("POST /api/servers/{name}/sync", s.writer(s.syncServer))
@@ -82,8 +84,19 @@ func New(mgr *manager.Manager, auth Auth, basePath string) http.Handler {
 	}))
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	root.Handle("/", protection.Handler(s.authenticate(mux)))
+	root.Handle("/", protection.Handler(s.authenticate(noStore(mux))))
 	return forwardedHost(mount(basePath, secureHeaders(root)))
+}
+
+// noStore keeps API answers out of caches: they hold client data, and backups hold
+// the credentials of the Kea configuration.
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // revalidate keeps a browser from running an old frontend after an update.
@@ -461,6 +474,23 @@ func (s *server) haAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeResult(w, res)
+}
+
+func (s *server) settings(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.mgr.SettingFields())
+}
+
+func (s *server) updateSettings(w http.ResponseWriter, r *http.Request) {
+	var values map[string]int
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodySize)).Decode(&values); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid JSON"})
+		return
+	}
+	if err := s.mgr.UpdateSettings(user(r), values); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.mgr.SettingFields())
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
