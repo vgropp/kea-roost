@@ -445,3 +445,34 @@ func TestMetricsCanBeTurnedOff(t *testing.T) {
 		t.Fatalf("got %d", res.StatusCode)
 	}
 }
+
+func TestLoginComparesWholeValues(t *testing.T) {
+	_, srv := setup(t, web.Auth{User: "admin", Password: "secret"})
+	cases := []struct {
+		user, password string
+		want           int
+	}{
+		{"admin", "secret", http.StatusOK},
+		{"admin", "secre", http.StatusUnauthorized},
+		{"admin", "secret2", http.StatusUnauthorized},
+		{"admin", "", http.StatusUnauthorized},
+		{"admin", "secret\x00", http.StatusUnauthorized},
+		{"", "", http.StatusUnauthorized},
+		{"admi", "secret", http.StatusUnauthorized},
+	}
+	for _, c := range cases {
+		req, err := http.NewRequest("GET", srv.URL+"/api/meta", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.SetBasicAuth(c.user, c.password)
+		res, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != c.want {
+			t.Errorf("%q %q: %d", c.user, c.password, res.StatusCode)
+		}
+	}
+}

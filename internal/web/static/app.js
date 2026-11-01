@@ -1462,7 +1462,8 @@ async function route() {
   stopRefresh();
   if (dialog.open) closeDialog();
   const [name, query] = location.hash.replace('#/', '').split('?');
-  const page = pages[name] ? name : 'dashboard';
+  // own properties only: a link to #/constructor must not reach what objects inherit
+  const page = Object.hasOwn(pages, name) ? name : 'dashboard';
   for (const a of document.querySelectorAll('nav a')) a.classList.toggle('active', a.dataset.page === page);
   await loadClassOptions();
   pages[page](new URLSearchParams(query));
