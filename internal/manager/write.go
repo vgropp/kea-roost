@@ -408,6 +408,12 @@ func (m *Manager) finish(c change, res *Result) *Result {
 		res.Warnings = append(res.Warnings, "Could not write the audit log: "+err.Error())
 	}
 	slog.Info("change", "user", c.user, "action", c.action, "target", c.target, "status", res.Status)
+	// comes last: the audit entry must not wait for a slow Kea
+	if res.Status != StatusFailed {
+		if err := m.RefreshHostsFile(context.Background()); err != nil {
+			res.Warnings = append(res.Warnings, "Could not update the DNS hosts file: "+err.Error())
+		}
+	}
 	return res
 }
 
