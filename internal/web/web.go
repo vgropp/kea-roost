@@ -31,6 +31,12 @@ const (
 type Auth struct {
 	User     string
 	Password string
+	// MetricsUser is the login of /metrics, which it opens and nothing else. The login
+	// of the interface does not work there. Without it, /metrics is open.
+	MetricsUser     string
+	MetricsPassword string
+	// MetricsOff removes /metrics altogether.
+	MetricsOff bool
 }
 
 type server struct {
@@ -86,6 +92,9 @@ func New(mgr *manager.Manager, auth Auth, basePath string) http.Handler {
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	root.Handle("/", protection.Handler(s.authenticate(noStore(mux))))
+	if !auth.MetricsOff {
+		root.HandleFunc("GET /metrics", s.metricsLogin)
+	}
 	return forwardedHost(mount(basePath, secureHeaders(root)))
 }
 
@@ -146,6 +155,16 @@ func secureHeaders(next http.Handler) http.Handler {
 func equal(a, b string) bool {
 	x, y := sha256.Sum256([]byte(a)), sha256.Sum256([]byte(b))
 	return subtle.ConstantTimeCompare(x[:], y[:]) == 1
+}
+
+func (s *server) metricsLogin(w http.ResponseWriter, r *http.Request) {
+	user, password, ok := r.BasicAuth()
+	if s.auth.MetricsUser != "" && (!ok || !equal(user, s.auth.MetricsUser) || !equal(password, s.auth.MetricsPassword)) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="Kea Roost metrics", charset="UTF-8"`)
+		writeJSON(w, http.StatusUnauthorized, errorBody{Error: "login required"})
+		return
+	}
+	s.metrics(w, r)
 }
 
 func (s *server) authenticate(next http.Handler) http.Handler {
@@ -492,6 +511,13 @@ func (s *server) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.mgr.SettingFields())
+}
+
+func (s *server) metrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	if _, err := w.Write(s.mgr.Metrics(r.Context())); err != nil {
+		slog.Debug("write metrics", "error", err)
+	}
 }
 
 func (s *server) hideFinding(w http.ResponseWriter, r *http.Request) {

@@ -24,6 +24,8 @@ func TestDefaults(t *testing.T) {
 func TestInvalid(t *testing.T) {
 	cases := map[string]map[string]string{
 		"no url":        {},
+		"metrics user":  {"KEA_URL": "http://kea", "METRICS_USER": "a"},
+		"metrics flag":  {"KEA_URL": "http://kea", "METRICS_ENABLED": "maybe"},
 		"example pass":  {"KEA_URL": "http://kea", "MANAGER_USER": "a", "MANAGER_PASSWORD": "change-me"},
 		"bad scheme":    {"KEA_URL": "ftp://kea"},
 		"user only":     {"KEA_URL": "http://kea", "MANAGER_USER": "a"},
@@ -91,5 +93,16 @@ func TestHostsDir(t *testing.T) {
 	}
 	if _, err := Load(env(map[string]string{"KEA_URL": "http://kea", "DNS_HOSTS_DIR": "dns"})); err == nil {
 		t.Fatal("a relative path was accepted")
+	}
+}
+
+func TestMetricsCanBeTurnedOff(t *testing.T) {
+	c, err := Load(env(map[string]string{"KEA_URL": "http://kea"}))
+	if err != nil || c.MetricsOff {
+		t.Fatalf("%+v %v", c, err)
+	}
+	c, err = Load(env(map[string]string{"KEA_URL": "http://kea", "METRICS_ENABLED": "false"}))
+	if err != nil || !c.MetricsOff {
+		t.Fatalf("%+v %v", c, err)
 	}
 }

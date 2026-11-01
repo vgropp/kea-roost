@@ -74,6 +74,7 @@ type HealthReport struct {
 	Traffic  []PacketStats `json:"traffic"`
 	Findings []Finding     `json:"findings"`
 	Rules    []ReviewRule  `json:"rules"`
+	network  networkData
 }
 
 func packetStats(name string, status *kea.Status, stats map[string]int64) PacketStats {
@@ -275,6 +276,7 @@ func (m *Manager) Health(ctx context.Context) *HealthReport {
 		}
 	}
 	network := m.fetchNetwork(ctx)
+	r.network = network
 	if m.ARPMonitorEnabled() {
 		if network.arpErr != nil {
 			r.Checks = append(r.Checks, HealthCheck{"ARP monitor", "", SeverityWarn, network.arpErr.Error()})
