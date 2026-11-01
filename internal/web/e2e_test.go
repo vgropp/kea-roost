@@ -89,7 +89,7 @@ func start(t *testing.T) *browser {
 		t.Fatal(err)
 	}
 	mgr := manager.New(client, store, "primary")
-	mgr.SetARPMonitor(monitor.URL, 7)
+	mgr.SetARPMonitor(monitor.URL)
 	peer := keatest.New()
 	seed(peer)
 	peer.Hosts = append(peer.Hosts, map[string]any{"subnet-id": 0, "hw-address": "00:00:0c:00:00:fe", "ip-address": "192.0.2.250"})
@@ -600,6 +600,13 @@ func TestClientPopupExplainsAddress(t *testing.T) {
 	b.poll(`document.querySelector('dialog .dialog-close') !== null && document.querySelector('dialog.wide') !== null`)
 	b.exec(`document.querySelector('dialog .dialog-close').click()`)
 	b.poll(`!document.querySelector('dialog').open`)
+	// closing while it loads must stay closed once the answer arrives
+	b.exec(`document.querySelector('tbody .client-link').click(); document.querySelector('dialog .dialog-close').click()`)
+	b.exec(`setTimeout(() => { window.reopened = document.querySelector('dialog').open; }, 500)`)
+	b.poll(`window.reopened !== undefined`)
+	if evaluate[bool](b, `window.reopened`) {
+		t.Fatal("the popup came back after it was closed")
+	}
 	b.open("devices", "Devices")
 	b.poll(`document.querySelector('tbody .client-link') !== null`)
 	b.open("reservations", "Reservations")
@@ -635,7 +642,7 @@ func TestNavigationIsGrouped(t *testing.T) {
 	b := start(t)
 	b.open("dashboard", "Dashboard")
 	got := b.text(`[...document.querySelectorAll('.nav-group')].map(g => [...g.children].map(a => a.textContent).join('+')).join(' | ')`)
-	if want := "Dashboard | Leases+Reservations+Devices | Classes+Subnets | HA+Servers | Health+Audit log"; got != want {
+	if want := "Dashboard | Leases+Reservations+Devices | Classes+Subnets | HA+Servers | Health+Audit log+Settings"; got != want {
 		t.Fatalf("got %s", got)
 	}
 	b.open("subnets", "Subnets")
@@ -654,5 +661,58 @@ func TestClientCardsKeepAddressesOnOneLine(t *testing.T) {
 		if overflow || broken {
 			t.Errorf("width %d: overflow %v, broken %v", width, overflow, broken)
 		}
+	}
+}
+
+func TestHealthListsItsChecksOnClick(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/health"))
+	b.poll(`document.querySelector('.check-list summary') !== null`)
+	summary := b.text(`document.querySelector('.check-list summary').textContent`)
+	if !strings.Contains(summary, "checks passed") {
+		t.Fatalf("summary: %s", summary)
+	}
+	if !strings.Contains(b.text(`document.querySelector('.check-list summary').title`), "Reachable") {
+		t.Fatal("no tooltip")
+	}
+	b.exec(`document.querySelector('.check-list summary').click()`)
+	b.poll(`document.querySelector('.check-list').open && document.querySelector('.check-list li') !== null`)
+	first := b.text(`document.querySelector('.check-list li').textContent`)
+	if !strings.Contains(first, "Configuration in step") {
+		t.Errorf("a problem must come first: %s", first)
+	}
+	b.exec(`document.querySelector('.check-list').dataset.old = '1'; [...document.querySelectorAll('button')].find(x => x.textContent === 'Refresh').click()`)
+	b.poll(`document.querySelector('.check-list') !== null && !document.querySelector('.check-list').dataset.old`)
+	if !evaluate[bool](b, `document.querySelector('.check-list').open`) {
+		t.Error("a refresh closed the list")
+	}
+}
+
+func TestReviewShowsItsRulesOnClick(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/health"))
+	b.poll(`document.querySelector('.rule-list summary') !== null`)
+	if got := b.text(`document.querySelector('.rule-list summary').textContent`); !strings.Contains(got, "rules checked") {
+		t.Fatalf("summary: %s", got)
+	}
+	b.exec(`document.querySelector('.rule-list summary').click()`)
+	b.poll(`document.querySelector('.rule-list').open && document.querySelector('.rule-list').textContent.includes('No address is online on two devices')`)
+}
+
+func TestFindingsLinkToTheirEntry(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/health"))
+	b.poll(`[...document.querySelectorAll('tbody a')].some(x => x.getAttribute('href')?.startsWith('#/reservations?q=') || x.classList.contains('client-link'))`)
+}
+
+func TestSettingsPageSaves(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/settings"))
+	b.poll(`document.querySelector('input[name="reviewDays"]') !== null`)
+	b.exec(`document.querySelector('input[name="reviewDays"]').value = '90'; document.querySelector('main form, form').requestSubmit()`)
+	b.poll(`document.body.textContent.includes('Settings saved.')`)
+	b.poll(`document.querySelector('input[name="reviewDays"]').value === '90' && document.body.textContent.includes('changed')`)
+	if got := b.text(`document.body.textContent`); strings.Contains(strings.ToLower(got), "password") {
+		t.Errorf("no secrets belong here: %s", got)
 	}
 }

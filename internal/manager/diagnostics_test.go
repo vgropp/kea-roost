@@ -242,17 +242,17 @@ func TestReviewFindsBrokenSettingsAndSubnets(t *testing.T) {
 
 func TestTrafficChecks(t *testing.T) {
 	busy := PacketStats{Server: "a", Received: 1000, Dropped: 200, Ack: 100, Nak: 50, AllocFailed: 3, Decline: 1}
-	got := trafficChecks(busy)
+	got := trafficChecks(busy, defaultSettings())
 	for _, name := range []string{"Dropped packets", "Refused requests", "Address allocation", "Declined addresses"} {
 		if !slices.ContainsFunc(got, func(c HealthCheck) bool { return c.Name == name }) {
 			t.Errorf("%s missing in %+v", name, got)
 		}
 	}
 	busy = PacketStats{Server: "a", Standby: true, Received: 1000, Dropped: 900}
-	if got := trafficChecks(busy); len(got) != 0 {
+	if got := trafficChecks(busy, defaultSettings()); len(got) != 0 {
 		t.Errorf("a standby drops on purpose: %+v", got)
 	}
-	if got := trafficChecks(PacketStats{Server: "a", Received: 4, Dropped: 2}); len(got) != 0 {
+	if got := trafficChecks(PacketStats{Server: "a", Received: 4, Dropped: 2}, defaultSettings()); len(got) != 0 {
 		t.Errorf("too few packets: %+v", got)
 	}
 }

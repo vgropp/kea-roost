@@ -493,7 +493,7 @@ func (m *Manager) addressInUse(ctx context.Context, in *ReservationInput) (activ
 		device := strings.TrimSpace(d.MAC + " " + strings.TrimSuffix(d.Hostname, "."))
 		age := m.now().Sub(d.LastSeen)
 		// the monitor lists the newest address first and keeps a time per device
-		if position == 0 && age <= conflictMaxAge {
+		if position == 0 && age <= m.cfg().online() {
 			active = append(active, fmt.Sprintf("%s is in use by %s", in.IPAddress, device))
 		} else if position == 0 {
 			stale = append(stale, fmt.Sprintf("%s was last used by %s, seen %s ago", in.IPAddress, device, age.Round(time.Minute)))
@@ -742,6 +742,8 @@ func (m *Manager) DeleteLease(ctx context.Context, user, ip string) error {
 	}
 	ctx, cancel := detached(ctx)
 	defer cancel()
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
 	found, err := m.kea.DeleteLease(ctx, ip)
 	status := StatusOK
 	var unreachable *kea.UnreachableError

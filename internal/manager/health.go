@@ -12,13 +12,6 @@ import (
 	"github.com/vgropp/kea-roost/internal/kea"
 )
 
-const (
-	dropWarnPercent = 5.0
-	nakWarnPercent  = 10.0
-	// Below this many packets a share says nothing.
-	minPackets = 50
-)
-
 // HealthCheck is the result of one check.
 type HealthCheck struct {
 	Name     string   `json:"name"`
@@ -51,10 +44,24 @@ type PacketStats struct {
 
 // Finding is something the configuration review noticed.
 type Finding struct {
+	Rule     string   `json:"rule"`
 	Severity Severity `json:"severity"`
 	Area     string   `json:"area"`
 	Target   string   `json:"target"`
 	Message  string   `json:"message"`
+	// Page and Query lead to the entry: a page, or "client" for the client popup.
+	Page  string `json:"page,omitempty"`
+	Query string `json:"query,omitempty"`
+}
+
+// ReviewRule is one check of the review and what came of it.
+type ReviewRule struct {
+	Rule     string `json:"rule"`
+	Title    string `json:"title"`
+	Findings int    `json:"findings"`
+	// Skipped says why its source of data is not available, if so.
+	Skipped string `json:"skipped,omitempty"`
+	network bool
 }
 
 // HealthReport is the answer of Health.
@@ -63,6 +70,7 @@ type HealthReport struct {
 	Checks   []HealthCheck `json:"checks"`
 	Traffic  []PacketStats `json:"traffic"`
 	Findings []Finding     `json:"findings"`
+	Rules    []ReviewRule  `json:"rules"`
 }
 
 func packetStats(name string, status *kea.Status, stats map[string]int64) PacketStats {
@@ -79,17 +87,19 @@ func packetStats(name string, status *kea.Status, stats map[string]int64) Packet
 
 // trafficChecks reads the counters. A standby drops what it does not serve on
 // purpose, so drops only count on a server that is meant to answer.
-func trafficChecks(p PacketStats) []HealthCheck {
+func trafficChecks(p PacketStats, cfg Settings) []HealthCheck {
 	var out []HealthCheck
 	add := func(severity Severity, name, format string, args ...any) {
 		out = append(out, HealthCheck{name, p.Server, severity, fmt.Sprintf(format, args...)})
 	}
+	// below some number of packets a share says nothing
+	minPackets := int64(cfg.MinPackets)
 	if !p.Standby && p.Received >= minPackets {
-		if share := 100 * float64(p.Dropped) / float64(p.Received); share >= dropWarnPercent {
+		if share := 100 * float64(p.Dropped) / float64(p.Received); share >= float64(cfg.DropWarnPercent) {
 			add(SeverityWarn, "Dropped packets", "%d of %d packets (%.0f %%)", p.Dropped, p.Received, share)
 		}
 		if answers := p.Ack + p.Nak; answers >= minPackets {
-			if share := 100 * float64(p.Nak) / float64(answers); share >= nakWarnPercent {
+			if share := 100 * float64(p.Nak) / float64(answers); share >= float64(cfg.NakWarnPercent) {
 				add(SeverityWarn, "Refused requests", "%d NAKs on %d answers (%.0f %%)", p.Nak, answers, share)
 			}
 		}
@@ -180,7 +190,7 @@ func (m *Manager) serverChecks(ctx context.Context, s server) ([]HealthCheck, *P
 			}
 			if r.ClockSkew != nil {
 				severity := SeverityOK
-				if *r.ClockSkew > clockSkewWarn || *r.ClockSkew < -clockSkewWarn {
+				if skewed(*r.ClockSkew, m.cfg().ClockSkewSeconds) {
 					severity = SeverityWarn
 				}
 				add(severity, "Clock", "%d s from %s", *r.ClockSkew, r.ServerName)
@@ -219,14 +229,14 @@ func (m *Manager) serverChecks(ctx context.Context, s server) ([]HealthCheck, *P
 		p := packetStats(s.name, status, stats)
 		p.Standby = standby
 		traffic = &p
-		checks = append(checks, trafficChecks(p)...)
+		checks = append(checks, trafficChecks(p, m.cfg())...)
 	}
 	return checks, traffic, version
 }
 
 // Health runs all checks. It only reads.
 func (m *Manager) Health(ctx context.Context) *HealthReport {
-	r := &HealthReport{Checks: []HealthCheck{}, Traffic: []PacketStats{}, Findings: []Finding{}}
+	r := &HealthReport{Checks: []HealthCheck{}, Traffic: []PacketStats{}, Findings: []Finding{}, Rules: []ReviewRule{}}
 	versions := map[string]string{}
 	for _, s := range m.servers() {
 		checks, traffic, version := m.serverChecks(ctx, s)
@@ -261,18 +271,17 @@ func (m *Manager) Health(ctx context.Context) *HealthReport {
 			}
 		}
 	}
-	short, cancel := context.WithTimeout(ctx, dashboardARPTimeout)
-	defer cancel()
+	network := m.fetchNetwork(ctx)
 	if m.ARPMonitorEnabled() {
-		if _, err := m.arpDevices(short); err != nil {
-			r.Checks = append(r.Checks, HealthCheck{"ARP monitor", "", SeverityWarn, err.Error()})
+		if network.arpErr != nil {
+			r.Checks = append(r.Checks, HealthCheck{"ARP monitor", "", SeverityWarn, network.arpErr.Error()})
 		} else {
 			r.Checks = append(r.Checks, HealthCheck{"ARP monitor", "", SeverityOK, "reachable"})
 		}
 	}
 	if m.apURL != "" {
-		if _, err := m.wifiClients(short); err != nil {
-			r.Checks = append(r.Checks, HealthCheck{"AP dashboard", "", SeverityWarn, err.Error()})
+		if network.wifiErr != nil {
+			r.Checks = append(r.Checks, HealthCheck{"AP dashboard", "", SeverityWarn, network.wifiErr.Error()})
 		} else {
 			r.Checks = append(r.Checks, HealthCheck{"AP dashboard", "", SeverityOK, "reachable"})
 		}
@@ -282,13 +291,8 @@ func (m *Manager) Health(ctx context.Context) *HealthReport {
 		r.Checks = append(r.Checks, *c)
 	}
 
-	src := m.source(ctx).client
-	if config, err := src.ConfigGet(ctx); err == nil {
-		if subnets, err := kea.ParseSubnets(config); err == nil {
-			if hosts, err := hostsOn(ctx, src, subnets); err == nil {
-				r.Findings = reviewConfig(config, subnets, hosts)
-			}
-		}
+	if err := m.review(ctx, r, network); err != nil {
+		r.Checks = append(r.Checks, HealthCheck{"Configuration review", "", SeverityWarn, "not possible: " + err.Error()})
 	}
 
 	r.Severity = SeverityOK
@@ -304,6 +308,31 @@ func (m *Manager) Health(ctx context.Context) *HealthReport {
 		}
 	}
 	return r
+}
+
+// review fills in findings and rules. Without a result it fails loudly: an empty
+// review must not look like a clean one.
+func (m *Manager) review(ctx context.Context, r *HealthReport, network networkData) error {
+	src := m.source(ctx).client
+	config, err := src.ConfigGet(ctx)
+	if err != nil {
+		return err
+	}
+	subnets, err := kea.ParseSubnets(config)
+	if err != nil {
+		return err
+	}
+	hosts, err := hostsOn(ctx, src, subnets)
+	if err != nil {
+		return err
+	}
+	r.Findings = reviewConfig(config, subnets, hosts)
+	found, skipped := m.networkFindings(ctx, subnets, hosts, network)
+	r.Findings = append(r.Findings, found...)
+	linkFindings(r.Findings)
+	sortFindings(r.Findings)
+	r.Rules = reviewSummary(r.Findings, skipped)
+	return nil
 }
 
 // classMember finds references to a class inside a test expression.
@@ -349,8 +378,8 @@ func usedClasses(node any, used map[string]bool) {
 // reviewConfig looks for mistakes that Kea accepts without complaint.
 func reviewConfig(config json.RawMessage, subnets []kea.Subnet, hosts []kea.Host) []Finding {
 	out := []Finding{}
-	add := func(severity Severity, area, target, format string, args ...any) {
-		out = append(out, Finding{severity, area, target, fmt.Sprintf(format, args...)})
+	add := func(rule string, severity Severity, area, target, format string, args ...any) {
+		out = append(out, Finding{Rule: rule, Severity: severity, Area: area, Target: target, Message: fmt.Sprintf(format, args...)})
 	}
 	flags := parseFlags(config)
 
@@ -372,7 +401,7 @@ func reviewConfig(config json.RawMessage, subnets []kea.Subnet, hosts []kea.Host
 	for _, c := range classes {
 		known[c.Name] = true
 		if c.Test == "" && !used[c.Name] {
-			add(SeverityInfo, "Class", c.Name, "has no test and nothing assigns it, so it never applies")
+			add("class-unused", SeverityInfo, "Class", c.Name, "has no test and nothing assigns it, so it never applies")
 		}
 	}
 
@@ -393,7 +422,7 @@ func reviewConfig(config json.RawMessage, subnets []kea.Subnet, hosts []kea.Host
 		}
 		for _, name := range h.Classes() {
 			if !known[name] && !slices.Contains(builtinClasses, name) {
-				add(SeverityWarn, "Reservation", label, "uses the class %s, which does not exist", name)
+				add("class-missing", SeverityWarn, "Reservation", label, "uses the class %s, which does not exist", name)
 			}
 		}
 		ip, err := netip.ParseAddr(h.IP())
@@ -404,11 +433,11 @@ func reviewConfig(config json.RawMessage, subnets []kea.Subnet, hosts []kea.Host
 		s := kea.SubnetFor(subnets, h)
 		switch {
 		case s == nil:
-			add(SeverityWarn, "Reservation", label, "%s lies in no configured subnet", ip)
+			add("reservation-no-subnet", SeverityWarn, "Reservation", label, "%s lies in no configured subnet", ip)
 		case !s.Prefix.Contains(ip):
-			add(SeverityCrit, "Reservation", label, "%s is outside of its subnet %s", ip, s.Subnet)
+			add("reservation-wrong-subnet", SeverityCrit, "Reservation", label, "%s is outside of its subnet %s", ip, s.Subnet)
 		case s.PoolContaining(ip) != nil:
-			add(SeverityInfo, "Reservation", label, "%s lies inside the dynamic pool, so another client may hold it first", ip)
+			add("reservation-in-pool", SeverityInfo, "Reservation", label, "%s lies inside the dynamic pool, so another client may hold it first", ip)
 		}
 		if s != nil {
 			inherited := map[string]string{}
@@ -417,26 +446,26 @@ func reviewConfig(config json.RawMessage, subnets []kea.Subnet, hosts []kea.Host
 			}
 			for _, o := range hostOptions(h) {
 				if o.Name != "" && inherited[o.Name] == o.Data {
-					add(SeverityInfo, "Reservation", label, "sets %s to the value it inherits anyway", o.Name)
+					add("reservation-inherited", SeverityInfo, "Reservation", label, "sets %s to the value it inherits anyway", o.Name)
 				}
 			}
 		}
 	}
 	for _, ip := range sortedKeys(byAddress) {
 		if labels := byAddress[ip]; len(labels) > 1 {
-			add(SeverityCrit, "Reservation", ip, "is reserved %d times: %s", len(labels), strings.Join(labels, ", "))
+			add("duplicate-address", SeverityCrit, "Reservation", ip, "is reserved %d times: %s", len(labels), strings.Join(labels, ", "))
 		}
 	}
 	for _, name := range sortedKeys(byName) {
 		if ids := byName[name]; len(ids) > 1 {
-			add(SeverityWarn, "Reservation", name, "is used by %d reservations: %s", len(ids), strings.Join(ids, ", "))
+			add("duplicate-name", SeverityWarn, "Reservation", name, "is used by %d reservations: %s", len(ids), strings.Join(ids, ", "))
 		}
 	}
 	if global > 0 && !flags.global() {
-		add(SeverityCrit, "Setting", "reservations-global", "is off, so Kea ignores %d global reservations", global)
+		add("setting-global", SeverityCrit, "Setting", "reservations-global", "is off, so Kea ignores %d global reservations", global)
 	}
 	if inSubnet > 0 && !flags.inSubnet() {
-		add(SeverityCrit, "Setting", "reservations-in-subnet", "is off, so Kea ignores %d subnet reservations", inSubnet)
+		add("setting-in-subnet", SeverityCrit, "Setting", "reservations-in-subnet", "is off, so Kea ignores %d subnet reservations", inSubnet)
 	}
 
 	for _, s := range subnets {
@@ -444,34 +473,54 @@ func reviewConfig(config json.RawMessage, subnets []kea.Subnet, hosts []kea.Host
 			found := kea.SubnetFor(subnets, h)
 			return found != nil && found.ID == s.ID
 		}) {
-			add(SeverityWarn, "Subnet", s.Subnet, "has neither a pool nor a reservation, so it serves nobody")
+			add("subnet-unused", SeverityWarn, "Subnet", s.Subnet, "has neither a pool nor a reservation, so it serves nobody")
 		}
 		pools := slices.Clone(s.Pools)
 		slices.SortFunc(pools, func(a, b kea.Pool) int { return a.First.Compare(b.First) })
 		for i, p := range pools {
 			if !s.Prefix.Contains(p.First) || !s.Prefix.Contains(p.Last) {
-				add(SeverityCrit, "Subnet", s.Subnet, "pool %s reaches outside of the subnet", p.Text)
+				add("pool-outside", SeverityCrit, "Subnet", s.Subnet, "pool %s reaches outside of the subnet", p.Text)
 			}
 			if i > 0 && p.First.Compare(pools[i-1].Last) <= 0 {
-				add(SeverityCrit, "Subnet", s.Subnet, "pools %s and %s overlap", pools[i-1].Text, p.Text)
+				add("pool-overlap", SeverityCrit, "Subnet", s.Subnet, "pools %s and %s overlap", pools[i-1].Text, p.Text)
 			}
 		}
 		gateways := s.Gateways()
 		if len(gateways) == 0 {
-			add(SeverityInfo, "Subnet", s.Subnet, "offers no gateway")
+			add("gateway-missing", SeverityInfo, "Subnet", s.Subnet, "offers no gateway")
 		}
 		for _, g := range gateways {
 			if ip, err := netip.ParseAddr(g); err != nil || !s.Prefix.Contains(ip) {
-				add(SeverityWarn, "Subnet", s.Subnet, "gateway %s is not inside the subnet", g)
+				add("gateway-outside", SeverityWarn, "Subnet", s.Subnet, "gateway %s is not inside the subnet", g)
 			}
 		}
 		if len(s.DNSServers()) == 0 {
-			add(SeverityInfo, "Subnet", s.Subnet, "offers no DNS server")
+			add("dns-missing", SeverityInfo, "Subnet", s.Subnet, "offers no DNS server")
 		}
 	}
-	rank := map[Severity]int{SeverityCrit: 0, SeverityWarn: 1, SeverityInfo: 2}
-	slices.SortStableFunc(out, func(a, b Finding) int { return rank[a.Severity] - rank[b.Severity] })
+	sortFindings(out)
 	return out
+}
+
+// linkFindings says where the entry of a finding can be opened.
+func linkFindings(list []Finding) {
+	pages := map[string]string{"Reservation": "reservations", "Class": "classes", "Network": "client"}
+	for i := range list {
+		f := &list[i]
+		if f.Page != "" {
+			continue
+		}
+		if f.Area == "Subnet" {
+			f.Page = "subnets"
+			continue
+		}
+		f.Page, f.Query = pages[f.Area], f.Target
+	}
+}
+
+func sortFindings(list []Finding) {
+	rank := map[Severity]int{SeverityCrit: 0, SeverityWarn: 1, SeverityInfo: 2}
+	slices.SortStableFunc(list, func(a, b Finding) int { return rank[a.Severity] - rank[b.Severity] })
 }
 
 // classTests keeps only the tests of the classes: a class does not count as used

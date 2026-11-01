@@ -24,7 +24,7 @@ func withMonitor(t *testing.T, e *env, handler http.HandlerFunc) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	e.mgr.SetARPMonitor(srv.URL+"/", 7)
+	e.mgr.SetARPMonitor(srv.URL + "/")
 }
 
 func TestDevicesListsDevicesWithoutReservation(t *testing.T) {
@@ -108,7 +108,7 @@ func TestDashboardRecentLeases(t *testing.T) {
 func TestDashboardRecentLeasesWithoutMonitor(t *testing.T) {
 	e := setup(t)
 	e.fake.Leases = []map[string]any{{"ip-address": "192.0.2.100", "subnet-id": 1, "state": 0, "cltt": time.Now().Unix(), "valid-lft": 100}}
-	e.mgr.SetARPMonitor("http://127.0.0.1:1", 7)
+	e.mgr.SetARPMonitor("http://127.0.0.1:1")
 	d := e.mgr.Dashboard(context.Background())
 	if len(d.RecentLeases) != 1 || d.RecentLeases[0].New {
 		t.Fatalf("got %+v", d.RecentLeases)
@@ -305,7 +305,7 @@ func TestDevicesMonitorFailures(t *testing.T) {
 		})
 	}
 	e := setup(t)
-	e.mgr.SetARPMonitor("http://127.0.0.1:1", 7)
+	e.mgr.SetARPMonitor("http://127.0.0.1:1")
 	if _, err := e.mgr.Devices(context.Background()); err == nil || !strings.Contains(err.Error(), "unreachable") {
 		t.Fatalf("got %v", err)
 	}

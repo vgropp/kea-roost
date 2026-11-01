@@ -363,3 +363,32 @@ func TestMetaNamesTheVersion(t *testing.T) {
 		t.Fatalf("meta: %s", body)
 	}
 }
+
+func TestSettingsNeedALoginToChange(t *testing.T) {
+	_, srv := setup(t, login)
+	if res, _ := do(t, srv, "PUT", "/api/settings", `{"reviewDays":90}`, false); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("without login: %d", res.StatusCode)
+	}
+	if res, body := do(t, srv, "PUT", "/api/settings", `{"reviewDays":90}`, true); res.StatusCode != http.StatusOK || !strings.Contains(body, `"reviewDays"`) {
+		t.Fatalf("with login: %d %s", res.StatusCode, body)
+	}
+	if res, _ := do(t, srv, "PUT", "/api/settings", `{"reviewDays":0}`, true); res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid: %d", res.StatusCode)
+	}
+}
+
+func TestSettingsAreReadOnlyWithoutLoginConfigured(t *testing.T) {
+	_, srv := setup(t, web.Auth{})
+	if res, _ := do(t, srv, "PUT", "/api/settings", `{"reviewDays":90}`, false); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("got %d", res.StatusCode)
+	}
+}
+
+func TestAPIAnswersAreNotCached(t *testing.T) {
+	_, srv := setup(t, login)
+	for _, path := range []string{"/api/meta", "/api/backups"} {
+		if res, _ := do(t, srv, "GET", path, "", true); res.Header.Get("Cache-Control") != "no-store" {
+			t.Errorf("%s: %q", path, res.Header.Get("Cache-Control"))
+		}
+	}
+}

@@ -24,13 +24,13 @@ func TestDefaults(t *testing.T) {
 func TestInvalid(t *testing.T) {
 	cases := map[string]map[string]string{
 		"no url":        {},
+		"example pass":  {"KEA_URL": "http://kea", "MANAGER_USER": "a", "MANAGER_PASSWORD": "change-me"},
 		"bad scheme":    {"KEA_URL": "ftp://kea"},
 		"user only":     {"KEA_URL": "http://kea", "MANAGER_USER": "a"},
 		"cert only":     {"KEA_URL": "http://kea", "KEA_CLIENT_CERT": "a"},
 		"both secret":   {"KEA_URL": "http://kea", "KEA_PASSWORD": "a", "KEA_PASSWORD_FILE": "b"},
 		"no file":       {"KEA_URL": "http://kea", "MANAGER_PASSWORD_FILE": "/does/not/exist"},
 		"bad monitor":   {"KEA_URL": "http://kea", "ARPMONITOR_URL": "host:8253"},
-		"bad days":      {"KEA_URL": "http://kea", "ARPMONITOR_DAYS": "0"},
 		"bad dashboard": {"KEA_URL": "http://kea", "APDASHBOARD_URL": "host:8189"},
 		"bad base":      {"KEA_URL": "http://kea", "MANAGER_BASE_PATH": "kea-roost"},
 	}

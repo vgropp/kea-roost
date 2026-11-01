@@ -331,3 +331,15 @@ html[data-theme="classic"] .dialog-close { font-size: 20px; padding: 0 8px; }
 .nav-group + .nav-group::before { content: ""; position: absolute; left: 0; top: 25%; bottom: 25%; width: 1px; background: var(--line); }
 .client-card .kv { grid-template-columns: max-content minmax(0, 1fr); column-gap: 12px; }
 .client-card dd { overflow-wrap: normal; word-break: normal; }
+.health-summary { flex-wrap: wrap; }
+.check-list { flex: 1 1 280px; min-width: 0; color: var(--ink-3); }
+.check-list summary { cursor: pointer; width: fit-content; }
+.check-list .checks { margin-top: 8px; color: var(--ink); }
+.rule-list { margin-bottom: 12px; }
+.setting-group { margin-bottom: 12px; }
+.setting { display: grid; grid-template-columns: minmax(170px, 240px) 190px 1fr; gap: 12px; align-items: center; padding: 6px 0; }
+.setting-value { display: flex; align-items: center; gap: 6px; }
+.setting-value input { width: 110px; }
+.setting-help { font-size: 12px; }
+.setting-name .tag { margin-left: 6px; }
+@media (max-width: 640px) { .setting { grid-template-columns: 1fr; gap: 4px; } }

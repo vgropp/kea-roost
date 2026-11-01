@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vgropp/kea-roost/internal/kea"
@@ -29,10 +30,6 @@ const (
 	newDeviceAge     = 24 * time.Hour
 	// A slow ARP monitor must not hold up the dashboard.
 	dashboardARPTimeout = 3 * time.Second
-
-	utilizationWarn = 80.0
-	utilizationCrit = 95.0
-	clockSkewWarn   = 30
 )
 
 // Manager serves one Kea instance and keeps its peers in step with it. What it
@@ -56,13 +53,16 @@ type Manager struct {
 	now          func() time.Time
 	writeMu      sync.Mutex
 	arpURL       string
-	arpDays      int
+	settings     atomic.Pointer[Settings]
 	apURL        string
 }
 
 // New creates a Manager.
 func New(client *kea.Client, store *Store, serverName string) *Manager {
-	return &Manager{kea: client, store: store, serverName: serverName, now: time.Now}
+	m := &Manager{kea: client, store: store, serverName: serverName, now: time.Now}
+	s := defaultSettings()
+	m.settings.Store(&s)
+	return m
 }
 
 // SetVersion names the running release.
@@ -587,7 +587,7 @@ func (m *Manager) haViews(ctx context.Context, status *kea.Status) ([]HAView, []
 			v.UnsentUpdates = &hb.UnsentUpdates
 		}
 		if r := rel.Servers.Remote; r != nil {
-			w := remoteWarnings(r)
+			w := remoteWarnings(r, m.cfg().ClockSkewSeconds)
 			if len(w) > 0 && v.Severity == SeverityOK {
 				v.Severity = SeverityWarn
 			}
@@ -598,7 +598,11 @@ func (m *Manager) haViews(ctx context.Context, status *kea.Status) ([]HAView, []
 	return views, warnings
 }
 
-func remoteWarnings(r *kea.HAServerRemote) []Warning {
+func skewed(value int64, limit int) bool {
+	return value > int64(limit) || value < -int64(limit)
+}
+
+func remoteWarnings(r *kea.HAServerRemote, skew int) []Warning {
 	var out []Warning
 	if !r.InTouch {
 		out = append(out, Warning{SeverityCrit, fmt.Sprintf("HA partner %s has never answered", r.ServerName)})
@@ -609,7 +613,7 @@ func remoteWarnings(r *kea.HAServerRemote) []Warning {
 	if r.LastState != "" && HAStateSeverity(r.LastState) != SeverityOK {
 		out = append(out, Warning{SeverityWarn, fmt.Sprintf("HA partner %s reports state %s", r.ServerName, r.LastState)})
 	}
-	if r.ClockSkew != nil && (*r.ClockSkew > clockSkewWarn || *r.ClockSkew < -clockSkewWarn) {
+	if r.ClockSkew != nil && skewed(*r.ClockSkew, skew) {
 		out = append(out, Warning{SeverityWarn, fmt.Sprintf("Clock skew to %s: %d s", r.ServerName, *r.ClockSkew)})
 	}
 	return out
@@ -743,9 +747,9 @@ func (m *Manager) fillCounts(ctx context.Context, d *Dashboard) {
 	d.SubnetCount = &count
 	d.Reservations = list.Reservations
 	for _, s := range list.Subnets {
-		if s.Percent != nil && *s.Percent >= utilizationWarn {
+		if s.Percent != nil && *s.Percent >= float64(m.cfg().PoolWarnPercent) {
 			severity := SeverityWarn
-			if *s.Percent >= utilizationCrit {
+			if *s.Percent >= float64(m.cfg().PoolCritPercent) {
 				severity = SeverityCrit
 			}
 			d.Warnings = append(d.Warnings, Warning{severity, fmt.Sprintf("Subnet %s is %.0f %% utilized", s.Subnet, *s.Percent)})
