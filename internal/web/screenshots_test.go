@@ -122,6 +122,7 @@ func TestScreenshots(t *testing.T) {
 	b.open("reservations", "Reservations")
 	shot("reservations")
 	b.open("subnets", "Subnets")
+	b.poll(`document.querySelector('.addr-grid') !== null`)
 	shot("subnets")
 	b.do(chromedp.Navigate(b.url + "/#/health"))
 	b.poll(`document.querySelector('.health-summary') !== null`)
