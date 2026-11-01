@@ -62,6 +62,9 @@ func run() error {
 	}
 	mgr := manager.New(client, store, cfg.ServerName)
 	mgr.SetVersion(version)
+	if cfg.HostsDir != "" {
+		mgr.SetHostsDir(cfg.HostsDir, cfg.HostsDomains)
+	}
 	for _, p := range cfg.Peers {
 		options.URL = p.URL
 		peer, err := kea.NewClient(options)
@@ -86,6 +89,7 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go mgr.WatchHostsFile(ctx)
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 70*time.Second)

@@ -12,12 +12,16 @@ import (
 	"strings"
 )
 
+var hostsDomain = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$`)
+
 var peerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // Config holds all settings.
 type Config struct {
 	KeaURL         string
 	Peers          []Peer
+	HostsDir       string
+	HostsDomains   []string
 	KeaUser        string
 	KeaPassword    string
 	KeaCAFile      string
@@ -61,6 +65,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		ARPMonitorURL:  getenv("ARPMONITOR_URL"),
 		ARPDays:        7,
 		APDashboardURL: getenv("APDASHBOARD_URL"),
+		HostsDir:       getenv("DNS_HOSTS_DIR"),
 	}
 	var err error
 	if c.KeaPassword, err = secret(getenv, "KEA_PASSWORD"); err != nil {
@@ -77,6 +82,19 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	if c.Peers, err = parsePeers(getenv("KEA_PEERS"), c.ServerName); err != nil {
 		return nil, err
+	}
+	if c.HostsDir != "" && !strings.HasPrefix(c.HostsDir, "/") {
+		return nil, fmt.Errorf("DNS_HOSTS_DIR %q must be an absolute path", c.HostsDir)
+	}
+	for _, domain := range strings.Split(getenv("DNS_HOSTS_DOMAIN"), ",") {
+		domain = strings.Trim(strings.TrimSpace(domain), ".")
+		if domain == "" {
+			continue
+		}
+		if !hostsDomain.MatchString(domain) {
+			return nil, fmt.Errorf("DNS_HOSTS_DOMAIN holds the invalid domain %q", domain)
+		}
+		c.HostsDomains = append(c.HostsDomains, domain)
 	}
 	if c.ARPMonitorURL != "" && !isHTTPURL(c.ARPMonitorURL) {
 		return nil, fmt.Errorf("ARPMONITOR_URL %q is not an http(s) URL", c.ARPMonitorURL)

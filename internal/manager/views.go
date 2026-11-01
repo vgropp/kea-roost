@@ -47,11 +47,17 @@ type Manager struct {
 	current    server
 	checked    time.Time
 	version    string
-	now        func() time.Time
-	writeMu    sync.Mutex
-	arpURL     string
-	arpDays    int
-	apURL      string
+
+	hostsPath    string
+	hostsDomains []string
+	hostsWriteMu sync.Mutex
+	hostsMu      sync.Mutex
+	hostsErr     error
+	now          func() time.Time
+	writeMu      sync.Mutex
+	arpURL       string
+	arpDays      int
+	apURL        string
 }
 
 // New creates a Manager.

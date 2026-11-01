@@ -2,10 +2,15 @@ name: kea-roost
 
 services:
   kea-roost:
+    # To run the published image instead of building, keep this line and delete the two below.
+    # image: ghcr.io/vgropp/kea-roost:${KEA_ROOST_VERSION:-latest}
     build: .
     image: kea-roost
     restart: unless-stopped
     env_file: .env
+    environment:
+      # Inside the container the folder of the host is always /dns.
+      DNS_HOSTS_DIR: ${DNS_HOSTS_DIR:+/dns}
     # The default bridge can reach services on the Docker host; a project network may not.
     network_mode: bridge
     extra_hosts:
@@ -14,6 +19,7 @@ services:
       - "${MANAGER_PORT:-8080}:8080"
     volumes:
       - data:/data
+      - ${DNS_HOSTS_DIR:-dns}:/dns
     read_only: true
     cap_drop:
       - ALL
@@ -22,3 +28,4 @@ services:
 
 volumes:
   data:
+  dns:

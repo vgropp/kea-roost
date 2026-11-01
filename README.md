@@ -60,6 +60,8 @@ lease into a static DHCP reservation in two clicks.
   allocations.
 - **Configuration review:** finds what Kea accepts without complaint, such as ignored
   reservations, unused classes, duplicate addresses and overlapping pools.
+- **DNS names:** keeps a hosts file of all reservations for dnsmasq or another DNS
+  server, see [DNS names](#dns-names-for-reservations).
 - **Audit log:** every change with its user and result, and downloadable backups.
 - **Safety checks:** see [How changes are applied](#how-changes-are-applied).
 - **Interface:** Classic and Modern themes in light and dark, usable on a phone,
@@ -91,20 +93,26 @@ The pictures show invented devices.
 
 ## Install with Docker Compose
 
-Images for `linux/amd64` and `linux/arm64` are published to the GitHub Container Registry:
+Images for `linux/amd64` and `linux/arm64` are published to the GitHub Container Registry
+as `ghcr.io/vgropp/kea-roost`:
 
-    curl -LO https://raw.githubusercontent.com/vgropp/kea-roost/main/compose.image.yaml
+    curl -LO https://raw.githubusercontent.com/vgropp/kea-roost/main/compose.yaml
     curl -L -o .env https://raw.githubusercontent.com/vgropp/kea-roost/main/.env.example
-    # set KEA_URL and the passwords in .env
-    docker compose -f compose.image.yaml up -d
+
+In `compose.yaml`, uncomment the `image` line and delete the `build` and `image` lines
+below it. Set `KEA_URL` and the passwords in `.env`, then start it:
+
+    docker compose up -d
 
 `latest` follows the newest release. To stay on one, set `KEA_ROOST_VERSION=0.8` for a
 release line or `KEA_ROOST_VERSION=0.8.0` for exactly one version in `.env`.
 `KEA_ROOST_VERSION=snapshot` follows every tested commit on `main`, for trying out what
 comes next.
 
-To build from source instead:
+To build from source instead, keep `compose.yaml` as it is:
 
+    git clone https://github.com/vgropp/kea-roost
+    cd kea-roost
     go run ./cmd/oui-update  # fetches the vendor table, needed once
     cp .env.example .env     # then set KEA_URL and the passwords
     docker compose up -d --build
@@ -164,6 +172,8 @@ All settings come from environment variables.
 | `KEA_CLIENT_CERT`, `KEA_CLIENT_KEY` | Client certificate (for `cert-required`) | empty |
 | `KEA_SERVER_NAME` | Display name of the server | `kea` |
 | `KEA_PEERS` | Further Kea servers as `name=url,name=url`, same credentials as `KEA_URL` | empty |
+| `DNS_HOSTS_DIR` | Folder for a hosts file of all reservations, see [DNS names](#dns-names-for-reservations) | off |
+| `DNS_HOSTS_DOMAIN` | Domains added to reservation names without one, comma separated | empty |
 | `MANAGER_LISTEN` | Listen address | `:8080` |
 | `MANAGER_USER`, `MANAGER_PASSWORD` | Login of the interface | empty |
 | `APDASHBOARD_URL` | Base URL of an [openwrt-ap-dashboard](https://github.com/vgropp/openwrt-ap-dashboard), adds WiFi clients to leases and devices | empty |
@@ -259,6 +269,41 @@ reservations, client classes and subnets of all servers the same:
 Every peer needs the hooks of the primary, a control socket with the same login,
 and a configuration file the Kea user can write. Settings outside of these three
 areas, such as global options, are neither compared nor copied.
+
+## DNS names for reservations
+
+Kea Roost can keep a hosts file of all reservations, so that a DNS server resolves the
+names you give in the interface. It needs no change to Kea and no script. With dnsmasq:
+
+    mkdir -p /var/lib/kea-roost-dns
+    chown 65532 /var/lib/kea-roost-dns
+
+Add this to `.env` and run `docker compose up -d`:
+
+    DNS_HOSTS_DIR=/var/lib/kea-roost-dns
+    DNS_HOSTS_DOMAIN=lan
+
+And this to the dnsmasq configuration, which then follows the file by itself:
+
+    hostsdir=/var/lib/kea-roost-dns
+
+The file has a line for every reservation with an address and a name:
+
+    192.0.2.10 nas.lan nas
+
+With `DNS_HOSTS_DOMAIN=lan,home` a name resolves as `nas`, `nas.lan` and `nas.home`.
+Reverse lookups answer with the first domain. A name that already has a domain stays as
+it is. Characters DNS does not allow become a dash, so `living room tv` resolves as
+`living-room-tv`.
+
+A device with a static address gets its name the same way: create a reservation for it.
+It does no harm, because the device never asks. Leases are left out on purpose, because
+a client picks that name itself and could claim the name of another device.
+
+The file is rewritten right after a change and checked every minute, which catches
+changes made in Kea directly. If Kea cannot be reached, the old file stays, and the
+Health page says so. Other hosts files work as well: the `hosts` plugin of CoreDNS can
+read it, for example.
 
 ## Diagnostics
 

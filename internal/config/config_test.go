@@ -80,3 +80,16 @@ func TestPeers(t *testing.T) {
 		}
 	}
 }
+
+func TestHostsDir(t *testing.T) {
+	c, err := Load(env(map[string]string{"KEA_URL": "http://kea", "DNS_HOSTS_DIR": "/dns", "DNS_HOSTS_DOMAIN": "lan, .home."}))
+	if err != nil || c.HostsDir != "/dns" || strings.Join(c.HostsDomains, "+") != "lan+home" {
+		t.Fatalf("%+v %v", c, err)
+	}
+	if _, err := Load(env(map[string]string{"KEA_URL": "http://kea", "DNS_HOSTS_DOMAIN": "a b"})); err == nil {
+		t.Fatal("an invalid domain was accepted")
+	}
+	if _, err := Load(env(map[string]string{"KEA_URL": "http://kea", "DNS_HOSTS_DIR": "dns"})); err == nil {
+		t.Fatal("a relative path was accepted")
+	}
+}

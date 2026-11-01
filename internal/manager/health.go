@@ -278,6 +278,10 @@ func (m *Manager) Health(ctx context.Context) *HealthReport {
 		}
 	}
 
+	if c := m.hostsCheck(); c != nil {
+		r.Checks = append(r.Checks, *c)
+	}
+
 	src := m.source(ctx).client
 	if config, err := src.ConfigGet(ctx); err == nil {
 		if subnets, err := kea.ParseSubnets(config); err == nil {
