@@ -74,6 +74,7 @@ func New(mgr *manager.Manager, auth Auth, basePath string) http.Handler {
 	mux.HandleFunc("POST /api/config/write", s.writer(s.persist))
 	mux.HandleFunc("GET /api/servers", s.servers)
 	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("GET /api/subnets/{subnet}/map", s.subnetMap)
 	mux.HandleFunc("GET /api/settings", s.settings)
 	mux.HandleFunc("PUT /api/settings", s.writer(s.updateSettings))
 	mux.HandleFunc("POST /api/findings/hide", s.writer(s.hideFinding))
@@ -398,6 +399,20 @@ func readSubnet(w http.ResponseWriter, r *http.Request) (int64, *manager.SubnetI
 		return 0, nil, false
 	}
 	return id, &in, true
+}
+
+func (s *server) subnetMap(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("subnet"), 10, 64)
+	if err != nil {
+		writeError(w, manager.ErrNotFound)
+		return
+	}
+	list, err := s.mgr.SubnetMap(r.Context(), id, r.URL.Query().Get("block"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
 }
 
 func (s *server) checkSubnet(w http.ResponseWriter, r *http.Request) {

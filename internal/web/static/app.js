@@ -911,7 +911,88 @@ function subnetCard(s, editable, reload) {
           s.options.filter(o => !['routers', 'domain-name-servers'].includes(o.name)).map(o => dl(o.name || `Option ${o.code}`, o.data || '–'))),
         h('div', {}, s.pools.length
           ? s.pools.map(p => meterRow(p.pool, p.assigned, p.total, p.percent))
-          : h('div', { class: 'empty' }, 'No pools')))));
+          : h('div', { class: 'empty' }, 'No pools'))),
+      addressMap(s)));
+}
+
+const ADDRESS_STATES = {
+  reserved: 'Reserved', leased: 'Leased', device: 'Seen on the network', gateway: 'Gateway', free: 'Free', network: 'Network or broadcast',
+};
+
+const SHOWN_RANGES = 8;
+
+function rangeItems(ranges) {
+  return h('ul', { class: 'free-ranges' }, ranges.map(r => h('li', {},
+    h('span', { class: 'mono' }, r.first === r.last ? r.first : `${r.first} – ${r.last}`),
+    h('span', { class: 'tag' }, fmtCount(r.count)))));
+}
+
+// The largest ranges first: they are what one looks for, the rest is mostly crumbs.
+function freeRangeList(title, ranges) {
+  const largest = ranges.toSorted((a, b) => b.count - a.count).slice(0, SHOWN_RANGES);
+  return h('div', {}, h('h3', {}, title), ranges.length ? rangeItems(largest) : h('p', { class: 'muted' }, 'None'),
+    ranges.length > SHOWN_RANGES ? h('details', { class: 'more-ranges' },
+      h('summary', {}, `Show all ${fmtCount(ranges.length)} ranges`), rangeItems(ranges)) : null);
+}
+
+function addressCell(c, dense) {
+  const label = dense ? '' : c.ip.split('.').at(-1);
+  const title = [c.ip, ADDRESS_STATES[c.state], c.pool ? 'in pool' : null, c.name, c.mac].filter(Boolean).join(' · ');
+  const attrs = { class: `addr ${c.state}${c.pool ? ' pool' : ''}`, title };
+  if (c.state === 'free' || c.state === 'network' || c.state === 'gateway') return h('span', attrs, label);
+  return h('a', { ...attrs, href: '#', onclick: event => { event.preventDefault(); clientDialog(c.mac || c.ip); } }, label);
+}
+
+function addressBlock(b, open) {
+  const fill = h('div', {});
+  const total = b.used + b.free;
+  fill.style.width = (total ? b.used / total * 100 : 0) + '%';
+  return h('button', { type: 'button', 'data-first': b.first, class: `addr-block${b.pool ? ' pool' : ''}`, title: `${b.first} – ${b.last}: ${b.used} used, ${b.free} free, ${b.pool} in a pool`, onclick: () => open(b) },
+    h('div', { class: 'mono' }, b.first), h('div', { class: 'meter' }, fill), h('div', { class: 'muted' }, `${fmtCount(b.free)} free`));
+}
+
+// Loads apart from the card, so that a slow ARP monitor does not hold up the page.
+function addressMap(s) {
+  const el = h('div', { class: 'address-map' }, h('p', { class: 'muted' }, 'Loading address map…'));
+  api('GET', `subnets/${s.id}/map`).then(m => {
+    if (m.tooLarge) {
+      el.replaceChildren(h('p', { class: 'muted' }, 'This subnet is too large for an address map.'));
+      return;
+    }
+    const dense = m.cells.length > 256;
+    const detail = h('div', { class: 'addr-detail' });
+    let shown = null;
+    const openBlock = async b => {
+      // a slower answer must not replace the block clicked after it
+      shown = b.first;
+      for (const tile of el.querySelectorAll('.addr-block')) tile.classList.toggle('active', tile.dataset.first === b.first);
+      detail.replaceChildren(h('p', { class: 'muted' }, 'Loading…'));
+      try {
+        const zoomed = await api('GET', `subnets/${s.id}/map?block=${encodeURIComponent(b.first)}`);
+        if (shown !== b.first) return;
+        detail.replaceChildren(h('div', { class: 'addr-detail-head' }, h('h3', {}, `${b.first} – ${b.last}`),
+          h('button', { class: 'small', onclick: () => { shown = null; detail.replaceChildren(); el.querySelector('.addr-block.active')?.classList.remove('active'); } }, 'Close')),
+        h('div', { class: 'addr-grid' }, zoomed.cells.map(c => addressCell(c, false))));
+      } catch (err) {
+        if (shown === b.first) detail.replaceChildren(errorNote(err));
+      }
+    };
+    const suffix = m.incomplete ? ' (incomplete)' : '';
+    const legend = ['reserved', 'leased', 'device', 'gateway', 'free'].map(state => h('span', { class: 'legend' },
+      h('span', { class: `addr ${state}` }), `${ADDRESS_STATES[state]}: ${fmtCount(m.counts[state] || 0)}`));
+    el.replaceChildren(...[
+      h('h3', {}, 'Addresses'),
+      notes(m.warnings.map(message => ({ severity: 'warn', message }))),
+      h('div', { class: 'legend-row' }, legend, h('span', { class: 'legend' }, h('span', { class: 'addr free pool' }), 'Pool')),
+      m.cells.length ? h('div', { class: `addr-grid${dense ? ' dense' : ''}` }, m.cells.map(c => addressCell(c, dense))) : null,
+      m.blocks.length ? h('div', { class: 'addr-blocks' }, m.blocks.map(b => addressBlock(b, openBlock))) : null,
+      detail,
+      h('div', { class: 'columns' },
+        freeRangeList(`Free in the pool: ${fmtCount(m.freePool)}${suffix}`, m.free.filter(r => r.pool)),
+        freeRangeList(`Free for static addresses: ${fmtCount(m.freeStatic)}${suffix}`, m.free.filter(r => !r.pool))),
+    ].filter(Boolean));
+  }).catch(err => el.replaceChildren(errorNote(err)));
+  return el;
 }
 
 pages.ha = () => {

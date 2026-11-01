@@ -757,3 +757,45 @@ func TestAuditLogHasPagesAndFilters(t *testing.T) {
 	b.exec(`const r = document.querySelector('select[aria-label="All results"]'); r.value = 'failed'; r.dispatchEvent(new Event('change'))`)
 	b.poll(`document.querySelector('select[aria-label="All results"]').value === ''`)
 }
+
+func TestSubnetShowsAddressMap(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/subnets"))
+	b.poll(`document.querySelectorAll('.addr-grid .addr').length === 256`)
+	b.poll(`document.querySelector('.addr-grid .addr.reserved') !== null && document.querySelector('.addr-grid .addr.pool') !== null`)
+	if got := b.text(`document.querySelector('.address-map').textContent`); !strings.Contains(got, "Free in the pool") || !strings.Contains(got, "Free for static addresses") {
+		t.Errorf("map: %s", got)
+	}
+	b.exec(`document.querySelector('.addr-grid a.addr').click()`)
+	b.poll(`document.querySelector('dialog.wide')?.textContent.includes('Why it')`)
+}
+
+func TestFreeRangesShowTheLargestFirst(t *testing.T) {
+	b := start(t)
+	f := b.fake
+	f.Lock()
+	f.Hosts = nil
+	for i := 2; i < 254; i += 3 {
+		f.Hosts = append(f.Hosts, map[string]any{"subnet-id": 0, "hw-address": fmt.Sprintf("02:00:00:00:01:%02x", i), "ip-address": fmt.Sprintf("192.0.2.%d", i)})
+	}
+	f.Unlock()
+	b.do(chromedp.Navigate(b.url + "/#/subnets"))
+	b.poll(`document.querySelector('.more-ranges summary')?.textContent.startsWith('Show all')`)
+	if got := evaluate[int](b, `document.querySelector('.free-ranges').children.length`); got != 8 {
+		t.Fatalf("shown: %d", got)
+	}
+}
+
+func TestBlockOpensItsAddresses(t *testing.T) {
+	b := start(t)
+	f := b.fake
+	f.Lock()
+	f.Config["subnet4"].([]any)[0].(map[string]any)["subnet"] = "192.0.0.0/20"
+	f.Unlock()
+	b.do(chromedp.Navigate(b.url + "/#/subnets"))
+	b.poll(`document.querySelectorAll('.addr-block').length === 16`)
+	b.exec(`document.querySelectorAll('.addr-block')[2].click()`)
+	b.poll(`document.querySelectorAll('.addr-detail .addr').length === 256 && document.querySelector('.addr-block.active') !== null`)
+	b.exec(`document.querySelector('.addr-detail button').click()`)
+	b.poll(`document.querySelectorAll('.addr-detail .addr').length === 0 && document.querySelector('.addr-block.active') === null`)
+}
