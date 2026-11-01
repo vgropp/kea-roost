@@ -54,6 +54,7 @@ type Manager struct {
 	writeMu      sync.Mutex
 	arpURL       string
 	settings     atomic.Pointer[Settings]
+	hidden       atomic.Pointer[map[string]bool]
 	apURL        string
 }
 

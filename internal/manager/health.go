@@ -52,6 +52,8 @@ type Finding struct {
 	// Page and Query lead to the entry: a page, or "client" for the client popup.
 	Page  string `json:"page,omitempty"`
 	Query string `json:"query,omitempty"`
+	// Hidden marks a finding the operator accepted.
+	Hidden bool `json:"hidden,omitempty"`
 }
 
 // ReviewRule is one check of the review and what came of it.
@@ -59,6 +61,7 @@ type ReviewRule struct {
 	Rule     string `json:"rule"`
 	Title    string `json:"title"`
 	Findings int    `json:"findings"`
+	Hidden   int    `json:"hidden,omitempty"`
 	// Skipped says why its source of data is not available, if so.
 	Skipped string `json:"skipped,omitempty"`
 	network bool
@@ -303,7 +306,7 @@ func (m *Manager) Health(ctx context.Context) *HealthReport {
 		}
 	}
 	for _, f := range r.Findings {
-		if rank[f.Severity] > rank[r.Severity] {
+		if !f.Hidden && rank[f.Severity] > rank[r.Severity] {
 			r.Severity = f.Severity
 		}
 	}
@@ -330,6 +333,7 @@ func (m *Manager) review(ctx context.Context, r *HealthReport, network networkDa
 	found, skipped := m.networkFindings(ctx, subnets, hosts, network)
 	r.Findings = append(r.Findings, found...)
 	linkFindings(r.Findings)
+	m.markHidden(r.Findings)
 	sortFindings(r.Findings)
 	r.Rules = reviewSummary(r.Findings, skipped)
 	return nil
