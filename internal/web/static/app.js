@@ -87,22 +87,24 @@ function errorNote(err) {
 
 // Table with search, filters and sorting. Data stays in the browser, so typing
 // does not trigger a lease4-get-all on every key press.
-function dataTable({ columns, search, filters = [], empty, initialSort, actions = [], params = new URLSearchParams(), rowClass, plain }) {
+function dataTable({ columns, search, filters = [], empty, initialSort, actions = [], params = new URLSearchParams(), rowClass, plain, pageSize }) {
   const sort = { key: initialSort, dir: 1 };
   const query = { text: (params.get('q') || '').toLowerCase() };
   const filterValues = Object.fromEntries(filters.map(f => [f.key, params.get(f.key) ?? f.default ?? '']));
   let rows = [];
+  let page = 0;
 
   const count = h('span', { class: 'count' });
+  const pager = h('div', { class: 'pager' });
   const head = h('thead');
   const body = h('tbody');
   const filterEls = filters.map(f => {
-    const select = h('select', { 'aria-label': f.label, onchange: () => { filterValues[f.key] = select.value; draw(); } });
+    const select = h('select', { 'aria-label': f.label, onchange: () => { filterValues[f.key] = select.value; page = 0; draw(); } });
     return { def: f, select };
   });
   const input = h('input', {
     class: 'grow', type: 'search', placeholder: search, 'aria-label': search, value: params.get('q') || '',
-    oninput: () => { query.text = input.value.trim().toLowerCase(); draw(); },
+    oninput: () => { query.text = input.value.trim().toLowerCase(); page = 0; draw(); },
   });
 
   function sortValue(col, row) {
@@ -128,10 +130,16 @@ function dataTable({ columns, search, filters = [], empty, initialSort, actions 
       onclick: c.noSort ? undefined : () => {
         sort.dir = sort.key === c.key ? -sort.dir : 1;
         sort.key = c.key;
+        page = 0;
         draw();
       },
     }, c.label + (c.key === sort.key ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''))), actions.length ? h('th', {}) : null));
-    const cells = list.map(row => h('tr', { class: rowClass?.(row) },
+    const pages = pageSize ? Math.max(Math.ceil(list.length / pageSize), 1) : 1;
+    page = Math.min(page, pages - 1);
+    const shown = pageSize ? list.slice(page * pageSize, (page + 1) * pageSize) : list;
+    const turn = (label, target, enabled) => h('button', { class: 'small', disabled: enabled ? undefined : '', onclick: () => { page = target; draw(); } }, label);
+    pager.replaceChildren(...(pages > 1 ? [turn('Previous', page - 1, page > 0), h('span', { class: 'count' }, `Page ${page + 1} of ${pages}`), turn('Next', page + 1, page < pages - 1)] : []));
+    const cells = shown.map(row => h('tr', { class: rowClass?.(row) },
       columns.map(c => h('td', { class: c.class || '' }, c.render ? c.render(row) : (row[c.key] || '–'))),
       actions.length ? h('td', { class: 'actions' }, actions.map(a => a(row))) : null));
     body.replaceChildren(...(cells.length ? cells
@@ -142,7 +150,8 @@ function dataTable({ columns, search, filters = [], empty, initialSort, actions 
   return {
     el: h('div', {},
       plain ? null : h('div', { class: 'toolbar' }, input, filterEls.map(f => f.select), count),
-      h('div', { class: 'panel table-wrap' }, h('table', {}, head, body))),
+      h('div', { class: 'panel table-wrap' }, h('table', {}, head, body)),
+      pager),
     setRows(next) {
       rows = next;
       for (const { def, select } of filterEls) {
@@ -980,9 +989,16 @@ function haCard(ha) {
 
 pages.audit = () => {
   const notice = h('div');
+  const distinct = (rows, key) => [...new Set(rows.map(r => r[key]))].sort().map(v => ({ value: v, label: v }));
   const audit = dataTable({
     search: 'Search user, action or target',
     empty: 'No changes yet',
+    pageSize: 50,
+    filters: [
+      { key: 'action', label: 'All actions', options: rows => distinct(rows, 'action'), match: (r, v) => r.action === v },
+      { key: 'status', label: 'All results', options: rows => distinct(rows, 'status'), match: (r, v) => r.status === v },
+      { key: 'user', label: 'All users', options: rows => distinct(rows, 'user'), match: (r, v) => r.user === v },
+    ],
     columns: [
       { key: 'time', label: 'Time', class: 'mono', render: r => fmtTime(r.time) },
       { key: 'user', label: 'User', class: 'mono', search: r => r.user },
@@ -998,6 +1014,7 @@ pages.audit = () => {
   const backups = dataTable({
     search: 'Search backups',
     empty: 'No backups yet',
+    pageSize: 25,
     columns: [
       { key: 'name', label: 'File', class: 'mono', search: r => r.name, render: r => h('a', { href: 'api/backups/' + encodeURIComponent(r.name), download: r.name }, r.name) },
       { key: 'size', label: 'Size', class: 'mono', render: r => fmtCount(r.size) + ' B' },

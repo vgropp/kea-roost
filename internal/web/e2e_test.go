@@ -732,3 +732,28 @@ func TestFindingCanBeHiddenAndShownAgain(t *testing.T) {
 	b.exec(`[...document.querySelectorAll('tbody button')].find(x => x.textContent === 'Show').click()`)
 	b.poll(`![...document.querySelectorAll('tbody button')].some(x => x.textContent === 'Show')`)
 }
+
+func TestAuditLogHasPagesAndFilters(t *testing.T) {
+	b := start(t)
+	b.open("dashboard", "Dashboard")
+	b.exec(`(async () => {
+		for (let i = 2; i < 58; i++) await fetch('api/settings', { method: 'PUT', body: JSON.stringify({ reviewDays: i }) });
+		window.seeded = true;
+	})()`)
+	b.poll(`window.seeded === true`)
+	b.do(chromedp.Navigate(b.url + "/#/audit"))
+	b.poll(`document.querySelector('.pager')?.textContent.includes('Page 1 of 2')`)
+	rows := `document.querySelectorAll('.panel.table-wrap')[0].querySelectorAll('tbody tr').length`
+	if got := evaluate[int](b, rows); got != 50 {
+		t.Fatalf("first page: %d rows", got)
+	}
+	b.exec(`[...document.querySelectorAll('.pager button')].find(x => x.textContent === 'Next').click()`)
+	b.poll(`document.querySelector('.pager').textContent.includes('Page 2 of 2')`)
+	if got := evaluate[int](b, rows); got != 6 {
+		t.Fatalf("second page: %d rows", got)
+	}
+	b.exec(`const s = document.querySelector('select[aria-label="All actions"]'); s.value = 'settings-update'; s.dispatchEvent(new Event('change'))`)
+	b.poll(`document.querySelector('.pager').textContent.includes('Page 1 of 2')`)
+	b.exec(`const r = document.querySelector('select[aria-label="All results"]'); r.value = 'failed'; r.dispatchEvent(new Event('change'))`)
+	b.poll(`document.querySelector('select[aria-label="All results"]').value === ''`)
+}

@@ -24,7 +24,7 @@ var static embed.FS
 
 const (
 	maxBodySize = 1 << 20
-	auditLimit  = 200
+	auditLimit  = 5000
 )
 
 // Auth holds the login of the manager; an empty User means read-only access.

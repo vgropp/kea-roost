@@ -557,6 +557,33 @@ func target(subnetID int64, identifierType, identifier string) string {
 	return fmt.Sprintf("subnet %d, %s %s", subnetID, identifierType, identifier)
 }
 
+// hostNote names a reservation for the audit log, where the identifier alone says
+// little once the entry is gone.
+func hostNote(hostname, ip string) string {
+	parts := make([]string, 0, 2)
+	for _, part := range []string{hostname, ip} {
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+func withNote(text, note string) string {
+	if note == "" {
+		return text
+	}
+	return text + " (" + note + ")"
+}
+
+// changeNote shows what became of a reservation.
+func changeNote(before, after string) string {
+	if before == after || before == "" {
+		return after
+	}
+	return before + " -> " + after
+}
+
 // verifyHost compares the reservation in Kea with what it should be.
 func verifyHost(ctx context.Context, k *kea.Client, in *ReservationInput) error {
 	h, err := k.Reservation(ctx, in.SubnetID, in.IdentifierType, in.Identifier)
@@ -586,7 +613,7 @@ func (m *Manager) CreateReservation(ctx context.Context, user string, in Reserva
 	return m.run(ctx, change{
 		user:         user,
 		action:       "reservation-add",
-		target:       target(in.SubnetID, in.IdentifierType, in.Identifier),
+		target:       withNote(target(in.SubnetID, in.IdentifierType, in.Identifier), hostNote(in.Hostname, in.IPAddress)),
 		backupReason: "reservation-add",
 		warnings:     warnings,
 		mutate: func(ctx context.Context, k *kea.Client) error {
@@ -638,7 +665,7 @@ func (m *Manager) UpdateReservation(ctx context.Context, user string, in Reserva
 	return m.run(ctx, change{
 		user:         user,
 		action:       "reservation-update",
-		target:       target(in.SubnetID, in.IdentifierType, in.Identifier),
+		target:       withNote(target(in.SubnetID, in.IdentifierType, in.Identifier), changeNote(hostNote(existing.Hostname(), existing.IP()), hostNote(in.Hostname, in.IPAddress))),
 		backupReason: "reservation-update",
 		warnings:     warnings,
 		mutate: func(ctx context.Context, k *kea.Client) error {
@@ -662,7 +689,7 @@ func (m *Manager) replaceReservation(ctx context.Context, user string, in Reserv
 	return m.run(ctx, change{
 		user:         user,
 		action:       "reservation-replace",
-		target:       fmt.Sprintf("%s -> %s %s", target(in.SubnetID, oldType, oldID), newType, newID),
+		target:       withNote(fmt.Sprintf("%s -> %s %s", target(in.SubnetID, oldType, oldID), newType, newID), changeNote(hostNote(existing.Hostname(), existing.IP()), hostNote(in.Hostname, in.IPAddress))),
 		backupReason: "reservation-replace",
 		warnings:     warnings,
 		mutate: func(ctx context.Context, k *kea.Client) error {
@@ -715,7 +742,7 @@ func (m *Manager) DeleteReservation(ctx context.Context, user string, subnetID i
 	return m.run(ctx, change{
 		user:         user,
 		action:       "reservation-del",
-		target:       target(subnetID, identifierType, id),
+		target:       withNote(target(subnetID, identifierType, id), hostNote(existing.Hostname(), existing.IP())),
 		backupReason: "reservation-del",
 		mutate: func(ctx context.Context, k *kea.Client) error {
 			return k.DeleteReservation(ctx, subnetID, identifierType, id)
