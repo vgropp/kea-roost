@@ -3,7 +3,6 @@ package web
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
@@ -153,14 +152,17 @@ func secureHeaders(next http.Handler) http.Handler {
 	})
 }
 
-func equal(a, b string) bool {
-	x, y := sha256.Sum256([]byte(a)), sha256.Sum256([]byte(b))
-	return subtle.ConstantTimeCompare(x[:], y[:]) == 1
+// hasLogin checks the Basic Auth of a request. It compares in constant time and always
+// both values, so that the response time gives away no characters.
+func hasLogin(r *http.Request, wantUser, wantPassword string) bool {
+	user, password, ok := r.BasicAuth()
+	userMatches := subtle.ConstantTimeCompare([]byte(user), []byte(wantUser))
+	passwordMatches := subtle.ConstantTimeCompare([]byte(password), []byte(wantPassword))
+	return ok && userMatches&passwordMatches == 1
 }
 
 func (s *server) metricsLogin(w http.ResponseWriter, r *http.Request) {
-	user, password, ok := r.BasicAuth()
-	if s.auth.MetricsUser != "" && (!ok || !equal(user, s.auth.MetricsUser) || !equal(password, s.auth.MetricsPassword)) {
+	if s.auth.MetricsUser != "" && !hasLogin(r, s.auth.MetricsUser, s.auth.MetricsPassword) {
 		w.Header().Set("WWW-Authenticate", `Basic realm="Kea Roost metrics", charset="UTF-8"`)
 		writeJSON(w, http.StatusUnauthorized, errorBody{Error: "login required"})
 		return
@@ -174,13 +176,12 @@ func (s *server) authenticate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		user, password, ok := r.BasicAuth()
-		if !ok || !equal(user, s.auth.User) || !equal(password, s.auth.Password) {
+		if !hasLogin(r, s.auth.User, s.auth.Password) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Kea Roost", charset="UTF-8"`)
 			writeJSON(w, http.StatusUnauthorized, errorBody{Error: "login required"})
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), contextKey{}, user)))
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), contextKey{}, s.auth.User)))
 	})
 }
 

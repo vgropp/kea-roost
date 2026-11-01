@@ -799,3 +799,11 @@ func TestBlockOpensItsAddresses(t *testing.T) {
 	b.exec(`document.querySelector('.addr-detail button').click()`)
 	b.poll(`document.querySelectorAll('.addr-detail .addr').length === 0 && document.querySelector('.addr-block.active') === null`)
 }
+
+func TestInheritedNamesAreNoPages(t *testing.T) {
+	b := start(t)
+	for _, page := range []string{"constructor", "toString", "__proto__", "nothing"} {
+		b.do(chromedp.Navigate(b.url + "/#/" + page))
+		b.poll(`document.querySelector('h1')?.textContent === 'Dashboard'`)
+	}
+}
