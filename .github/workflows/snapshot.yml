@@ -46,6 +46,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Renew the draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -55,5 +61,8 @@ jobs:
         run: |
           gh release list --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' |
             while read -r draft; do gh release delete "$draft" --yes; done
-          printf 'docker pull ghcr.io/%s:%s\n' "$GH_REPO" "${NEXT#v}" > image.txt
-          gh release create "$NEXT" --draft --target "$SHA" --title "$NEXT" --generate-notes --notes-file image.txt
+          {
+            printf '```\ndocker pull ghcr.io/%s:%s\n```\n\n' "$GH_REPO" "${NEXT#v}"
+            GITHUB_REPOSITORY="$GH_REPO" .github/scripts/release-notes.sh "$NEXT"
+          } > notes.md
+          gh release create "$NEXT" --draft --target "$SHA" --title "$NEXT" --notes-file notes.md
