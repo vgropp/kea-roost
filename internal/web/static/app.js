@@ -1250,10 +1250,12 @@ function checkSummary(checks, open, expanded) {
 function ruleSummary(rules, expanded, remember) {
   const run = rules.filter(r => !r.skipped);
   const hits = run.filter(r => r.findings).length;
+  const hiddenCount = run.reduce((sum, r) => sum + (r.hidden || 0), 0);
   const result = r => r.skipped ? state('neutral', r.skipped)
-    : r.findings ? state('warn', r.findings === 1 ? '1 finding' : `${r.findings} findings`) : state('ok', 'nothing found');
+    : r.findings ? state('warn', r.findings === 1 ? '1 finding' : `${r.findings} findings`)
+      : r.hidden ? state('neutral', `${r.hidden} hidden`) : state('ok', 'nothing found');
   const details = h('details', { class: 'check-list rule-list' },
-    h('summary', {}, `${run.length} rules checked, ${hits} with findings`),
+    h('summary', {}, `${run.length} rules checked, ${hits} with findings${hiddenCount ? `, ${hiddenCount} hidden` : ''}`),
     h('ul', { class: 'checks' }, rules.map(r => h('li', {}, result(r), h('span', { class: 'detail' }, r.title)))));
   details.open = expanded;
   details.addEventListener('toggle', () => remember(details.open));
@@ -1267,6 +1269,16 @@ pages.health = () => {
   const findings = dataTable({
     search: 'Search findings',
     empty: 'Nothing to report',
+    filters: [{
+      key: 'hidden', label: 'All findings', default: 'shown',
+      options: () => [{ value: 'shown', label: 'Open findings' }, { value: 'hidden', label: 'Hidden findings' }],
+      match: (r, v) => (r.hidden ? 'hidden' : 'shown') === v,
+    }],
+    actions: meta.writable ? [r => h('button', {
+      class: 'small',
+      title: r.hidden ? 'Show this finding again' : 'This is intended: stop reporting it',
+      onclick: () => hideFinding(r, !r.hidden),
+    }, r.hidden ? 'Show' : 'Hide')] : [],
     columns: [
       {
         key: 'severity', label: 'Level', sort: r => ['crit', 'warn', 'info'].indexOf(r.severity),
@@ -1278,13 +1290,21 @@ pages.health = () => {
     ],
     initialSort: 'severity',
   });
+  const hideFinding = async (f, hidden) => {
+    try {
+      await api('POST', 'findings/hide', { rule: f.rule, target: f.target, hidden });
+      load();
+    } catch (err) {
+      body.prepend(errorNote(err));
+    }
+  };
   const load = async () => {
     try {
       const r = await api('GET', 'health');
       const groups = new Map();
       for (const c of r.checks) groups.set(c.server || 'General', [...(groups.get(c.server || 'General') || []), c]);
       const count = list => list.filter(x => x.severity === 'warn' || x.severity === 'crit').length;
-      const open = count(r.checks) + count(r.findings);
+      const open = count(r.checks) + count(r.findings.filter(f => !f.hidden));
       findings.setRows(r.findings);
       const details = checkSummary(r.checks, open, listOpen);
       details.addEventListener('toggle', () => { listOpen = details.open; });

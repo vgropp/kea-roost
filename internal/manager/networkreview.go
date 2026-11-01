@@ -50,7 +50,11 @@ func reviewSummary(findings []Finding, skipped string) []ReviewRule {
 			out[i].Skipped = skipped
 		}
 		for _, f := range findings {
-			if f.Rule == out[i].Rule {
+			switch {
+			case f.Rule != out[i].Rule:
+			case f.Hidden:
+				out[i].Hidden++
+			default:
 				out[i].Findings++
 			}
 		}

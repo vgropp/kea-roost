@@ -716,3 +716,19 @@ func TestSettingsPageSaves(t *testing.T) {
 		t.Errorf("no secrets belong here: %s", got)
 	}
 }
+
+func TestFindingCanBeHiddenAndShownAgain(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/health"))
+	row := `[...document.querySelectorAll('tbody tr')].find(x => [...x.querySelectorAll('button')].some(y => y.textContent === 'Hide'))`
+	b.poll(row + ` !== undefined`)
+	buttons := `[...document.querySelectorAll('tbody button')].filter(x => x.textContent === 'Hide').length`
+	before := evaluate[int](b, buttons)
+	b.exec(row + `.querySelector('button').click()`)
+	b.poll(fmt.Sprintf(`%s === %d`, buttons, before-1))
+	b.poll(`document.querySelector('.rule-list summary').textContent.includes('hidden')`)
+	b.exec(`const s = [...document.querySelectorAll('select')].find(x => [...x.options].some(o => o.value === 'hidden')); s.value = 'hidden'; s.dispatchEvent(new Event('change'))`)
+	b.poll(`[...document.querySelectorAll('tbody button')].some(x => x.textContent === 'Show')`)
+	b.exec(`[...document.querySelectorAll('tbody button')].find(x => x.textContent === 'Show').click()`)
+	b.poll(`![...document.querySelectorAll('tbody button')].some(x => x.textContent === 'Show')`)
+}

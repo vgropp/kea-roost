@@ -76,6 +76,9 @@ func (m *Manager) cfg() Settings { return *m.settings.Load() }
 // LoadSettings reads the saved settings. A value missing in the file keeps its
 // default, so that a new setting works with an older file.
 func (m *Manager) LoadSettings() error {
+	if err := m.loadHidden(); err != nil {
+		return err
+	}
 	s := defaultSettings()
 	data, err := os.ReadFile(m.store.settingsPath())
 	if errors.Is(err, fs.ErrNotExist) {

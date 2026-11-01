@@ -70,6 +70,7 @@ func New(mgr *manager.Manager, auth Auth, basePath string) http.Handler {
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/settings", s.settings)
 	mux.HandleFunc("PUT /api/settings", s.writer(s.updateSettings))
+	mux.HandleFunc("POST /api/findings/hide", s.writer(s.hideFinding))
 	mux.HandleFunc("GET /api/clients/{id}", s.client)
 	mux.HandleFunc("POST /api/servers/{name}/ha/{action}", s.writer(s.haAction))
 	mux.HandleFunc("POST /api/servers/{name}/sync", s.writer(s.syncServer))
@@ -491,6 +492,23 @@ func (s *server) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.mgr.SettingFields())
+}
+
+func (s *server) hideFinding(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Rule   string `json:"rule"`
+		Target string `json:"target"`
+		Hidden bool   `json:"hidden"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodySize)).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid JSON"})
+		return
+	}
+	if err := s.mgr.HideFinding(user(r), in.Rule, in.Target, in.Hidden); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"hidden": in.Hidden})
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {

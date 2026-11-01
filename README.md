@@ -389,6 +389,10 @@ compared for reservations by MAC address. If a source is unreachable or empty, i
 the AP dashboard, all of these rules say so instead of reporting nothing. Each finding
 links to its entry.
 
+A finding that is intended, such as a device with a second address on purpose, can be
+hidden with its button. It stops counting and stays available in the filter of the table,
+where it can be shown again. This holds for that rule and that entry only.
+
 The number above the findings opens the list of all rules with their results. Warnings
 in the log of Kea are not part of this, because its API does not offer them.
 
