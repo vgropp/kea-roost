@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -286,6 +287,18 @@ func TestFindingsLeadToTheirEntry(t *testing.T) {
 			if f.Page != "" {
 				t.Errorf("%+v", f)
 			}
+		}
+	}
+}
+
+func TestEveryRuleIsDocumented(t *testing.T) {
+	data, err := os.ReadFile("../../docs/diagnostics.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range reviewRules {
+		if !strings.Contains(string(data), "| "+r.Title+" |") {
+			t.Errorf("not in the documentation: %s", r.Title)
 		}
 	}
 }

@@ -131,4 +131,32 @@ func TestScreenshots(t *testing.T) {
 	b.exec(`document.querySelector('tbody .client-link').click()`)
 	b.poll(`document.querySelector('dialog.wide')?.textContent.includes('Why it gets this address')`)
 	shot("client")
+	b.exec(`document.querySelector('dialog .dialog-close').click()`)
+	b.do(chromedp.Navigate(b.url + "/#/servers"))
+	b.poll(`document.querySelectorAll('.server-card').length === 2`)
+	shot("servers")
+	b.do(chromedp.Navigate(b.url + "/#/ha"))
+	b.poll(`document.querySelector('.ha-actions') !== null`)
+	shot("ha")
+	b.do(chromedp.Navigate(b.url + "/#/settings"))
+	b.poll(`document.querySelector('input[name="reviewDays"]') !== null`)
+	shot("settings")
+
+	subnet := func(cidr string) {
+		b.fake.Lock()
+		defer b.fake.Unlock()
+		b.fake.Config["subnet4"].([]any)[0].(map[string]any)["subnet"] = cidr
+	}
+	subnet("192.0.2.0/23")
+	b.do(chromedp.Navigate(b.url + "/#/leases"))
+	b.do(chromedp.Navigate(b.url + "/#/subnets"))
+	b.poll(`document.querySelector('.addr-grid.dense') !== null`)
+	shot("subnet-dense")
+	subnet("192.0.0.0/20")
+	b.do(chromedp.Navigate(b.url + "/#/leases"))
+	b.do(chromedp.Navigate(b.url + "/#/subnets"))
+	b.poll(`document.querySelectorAll('.addr-block').length === 16`)
+	b.exec(`document.querySelectorAll('.addr-block')[2].click()`)
+	b.poll(`document.querySelectorAll('.addr-detail .addr').length === 256`)
+	shot("subnet-blocks")
 }
