@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -30,6 +31,9 @@ type Config struct {
 	Listen         string
 	User           string
 	Password       string
+	MetricsOff     bool
+	MetricsUser    string
+	MetricsPass    string
 	DataDir        string
 	ARPMonitorURL  string
 	APDashboardURL string
@@ -59,6 +63,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		ServerName:     or(getenv("KEA_SERVER_NAME"), "kea"),
 		Listen:         or(getenv("MANAGER_LISTEN"), ":8080"),
 		User:           getenv("MANAGER_USER"),
+		MetricsUser:    getenv("METRICS_USER"),
 		DataDir:        or(getenv("MANAGER_DATA_DIR"), "/var/lib/kea-roost"),
 		ARPMonitorURL:  getenv("ARPMONITOR_URL"),
 		APDashboardURL: getenv("APDASHBOARD_URL"),
@@ -69,6 +74,9 @@ func Load(getenv func(string) string) (*Config, error) {
 		return nil, err
 	}
 	if c.Password, err = secret(getenv, "MANAGER_PASSWORD"); err != nil {
+		return nil, err
+	}
+	if c.MetricsPass, err = secret(getenv, "METRICS_PASSWORD"); err != nil {
 		return nil, err
 	}
 	if c.KeaURL == "" {
@@ -108,6 +116,16 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	if (c.User == "") != (c.Password == "") {
 		return nil, errors.New("MANAGER_USER and MANAGER_PASSWORD must be set together")
+	}
+	if text := getenv("METRICS_ENABLED"); text != "" {
+		enabled, err := strconv.ParseBool(text)
+		if err != nil {
+			return nil, fmt.Errorf("METRICS_ENABLED %q is neither true nor false", text)
+		}
+		c.MetricsOff = !enabled
+	}
+	if (c.MetricsUser == "") != (c.MetricsPass == "") {
+		return nil, errors.New("METRICS_USER and METRICS_PASSWORD must be set together")
 	}
 	if c.Password == "change-me" {
 		return nil, errors.New("MANAGER_PASSWORD still holds the example value")

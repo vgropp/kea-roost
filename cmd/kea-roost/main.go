@@ -82,7 +82,7 @@ func run() error {
 	if err := mgr.LoadSettings(); err != nil {
 		return err
 	}
-	handler := web.New(mgr, web.Auth{User: cfg.User, Password: cfg.Password}, cfg.BasePath)
+	handler := web.New(mgr, web.Auth{User: cfg.User, Password: cfg.Password, MetricsUser: cfg.MetricsUser, MetricsPassword: cfg.MetricsPass, MetricsOff: cfg.MetricsOff}, cfg.BasePath)
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           handler,

@@ -64,6 +64,8 @@ lease into a static DHCP reservation in two clicks.
   reservations, unused classes, duplicate addresses and overlapping pools.
 - **DNS names:** keeps a hosts file of all reservations for dnsmasq or another DNS
   server, see [DNS names](#dns-names-for-reservations).
+- **Prometheus metrics:** compatible with the common Kea exporters, plus findings, HA and
+  devices, see [Prometheus metrics](#prometheus-metrics).
 - **Audit log:** every change with its user and result, and downloadable backups.
 - **Safety checks:** see [How changes are applied](#how-changes-are-applied).
 - **Interface:** Classic and Modern themes in light and dark, usable on a phone,
@@ -174,6 +176,8 @@ All settings come from environment variables.
 | `KEA_CLIENT_CERT`, `KEA_CLIENT_KEY` | Client certificate (for `cert-required`) | empty |
 | `KEA_SERVER_NAME` | Display name of the server | `kea` |
 | `KEA_PEERS` | Further Kea servers as `name=url,name=url`, same credentials as `KEA_URL` | empty |
+| `METRICS_ENABLED` | Set to `false` to remove `/metrics` | `true` |
+| `METRICS_USER`, `METRICS_PASSWORD` | Login for `/metrics`, see [Prometheus metrics](#prometheus-metrics) | open |
 | `DNS_HOSTS_DIR` | Folder for a hosts file of all reservations, see [DNS names](#dns-names-for-reservations) | off |
 | `DNS_HOSTS_DOMAIN` | Domains added to reservation names without one, comma separated | empty |
 | `MANAGER_LISTEN` | Listen address | `:8080` |
@@ -183,8 +187,9 @@ All settings come from environment variables.
 | `MANAGER_DATA_DIR` | Backups and audit log | `/var/lib/kea-roost`, `/data` in the image |
 | `ARPMONITOR_URL` | Base URL of an [arpmonitor](https://github.com/vgropp/arpmonitor) with port and without path, enables the devices page | empty |
 
-`KEA_PASSWORD` and `MANAGER_PASSWORD` can instead be read from a file through
-`KEA_PASSWORD_FILE` and `MANAGER_PASSWORD_FILE`, for example a Docker secret.
+`KEA_PASSWORD`, `MANAGER_PASSWORD` and `METRICS_PASSWORD` can instead be read from a file
+through `KEA_PASSWORD_FILE`, `MANAGER_PASSWORD_FILE` and `METRICS_PASSWORD_FILE`, for
+example a Docker secret.
 
 Without a login the manager runs read-only: changes, backups and the audit log
 are locked. The interface itself only speaks HTTP, so TLS belongs in a reverse
@@ -270,6 +275,46 @@ reservations, client classes and subnets of all servers the same:
 Every peer needs the hooks of the primary, a control socket with the same login,
 and a configuration file the Kea user can write. Settings outside of these three
 areas, such as global options, are neither compared nor copied.
+
+## Prometheus metrics
+
+`/metrics` serves all metrics in the Prometheus format. It needs no login by default, like
+most exporters, and shows server names, subnets, and counts of devices and findings. To
+protect it, set `METRICS_USER` and `METRICS_PASSWORD`: this login opens only this path, and
+the login of the interface does not work there. `METRICS_ENABLED=false` removes the path altogether.
+
+    scrape_configs:
+      - job_name: kea-roost
+        metrics_path: /metrics
+        # only with METRICS_USER
+        basic_auth:
+          username: prometheus
+          password_file: /etc/prometheus/kea-roost-password
+        static_configs:
+          - targets: ["kea-roost:8080"]
+
+The Kea metrics keep the names of the common Kea exporters, so existing dashboards keep
+working: `kea_dhcp4_packets_received_total`, `kea_dhcp4_addresses_assigned_total`,
+`kea_dhcp4_global4_*`, `kea_dhcp4_pool_*` and so on. Each carries a `server` label, for
+HA pairs. The subnet metrics carry the labels of both exporters, `subnet`, `subnet_id`,
+`prefix`, `shared_network` and an empty `pool`. Pools are reported in their own
+`kea_dhcp4_pool_*` metrics only, so a sum over subnets counts nothing twice.
+
+Kea Roost adds what only it knows:
+
+| Metric | Meaning |
+|---|---|
+| `roost_server_up`, `roost_server_uptime_seconds` | Each Kea server |
+| `roost_ha_state`, `roost_ha_partner_in_touch`, `roost_ha_clock_skew_seconds` | The HA pair |
+| `roost_config_differences` | Entries a peer holds differently from the primary |
+| `roost_findings`, `roost_rule_findings`, `roost_findings_hidden`, `roost_rules_skipped` | The configuration review |
+| `roost_health_checks` | Health checks per result |
+| `roost_reservations`, `roost_leases_active` | Counts |
+| `roost_devices_online`, `roost_devices_known`, `roost_arp_monitor_up` | From the ARP monitor |
+| `roost_wifi_clients`, `roost_ap_dashboard_up` | From the AP dashboard |
+| `roost_dns_hosts_file_ok`, `roost_info` | The hosts file and the version |
+
+A scrape runs the same queries as the Health page, so an interval of a minute is enough.
 
 ## Settings
 

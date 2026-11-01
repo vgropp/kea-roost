@@ -392,3 +392,56 @@ func TestAPIAnswersAreNotCached(t *testing.T) {
 		}
 	}
 }
+
+func TestMetricsAreOpenWithoutTheirOwnLogin(t *testing.T) {
+	_, srv := setup(t, login)
+	res, body := do(t, srv, "GET", "/metrics", "", false)
+	if res.StatusCode != http.StatusOK || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/plain") || !strings.Contains(body, "roost_server_up") {
+		t.Fatalf("got %d %s", res.StatusCode, body)
+	}
+	if res, _ := do(t, srv, "GET", "/api/dashboard", "", false); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the interface stays closed: %d", res.StatusCode)
+	}
+}
+
+func TestMetricsHaveTheirOwnLogin(t *testing.T) {
+	_, srv := setup(t, web.Auth{User: "admin", Password: "pw", MetricsUser: "prometheus", MetricsPassword: "scrape"})
+	get := func(path, user, password string) int {
+		t.Helper()
+		req, err := http.NewRequest("GET", srv.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.SetBasicAuth(user, password)
+		res, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	if got := get("/metrics", "prometheus", "scrape"); got != http.StatusOK {
+		t.Errorf("metrics login: %d", got)
+	}
+	if got := get("/metrics", "admin", "pw"); got != http.StatusUnauthorized {
+		t.Errorf("admin on metrics: %d", got)
+	}
+	if got := get("/metrics", "prometheus", "wrong"); got != http.StatusUnauthorized {
+		t.Errorf("wrong password: %d", got)
+	}
+	for _, path := range []string{"/api/dashboard", "/api/settings", "/api/backups", "/"} {
+		if got := get(path, "prometheus", "scrape"); got != http.StatusUnauthorized {
+			t.Errorf("metrics login on %s: %d", path, got)
+		}
+	}
+	if got := get("/api/dashboard", "admin", "pw"); got != http.StatusOK {
+		t.Errorf("admin on the interface: %d", got)
+	}
+}
+
+func TestMetricsCanBeTurnedOff(t *testing.T) {
+	_, srv := setup(t, web.Auth{User: "admin", Password: "pw", MetricsOff: true})
+	if res, _ := do(t, srv, "GET", "/metrics", "", true); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("got %d", res.StatusCode)
+	}
+}
