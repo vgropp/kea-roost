@@ -59,10 +59,20 @@ jobs:
           NEXT: ${{ needs.version.outputs.next }}
           SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          gh release list --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' |
-            while read -r draft; do gh release delete "$draft" --yes; done
           {
             printf '```\ndocker pull ghcr.io/%s:%s\n```\n\n' "$GH_REPO" "${NEXT#v}"
             GITHUB_REPOSITORY="$GH_REPO" .github/scripts/release-notes.sh "$NEXT"
           } > notes.md
-          gh release create "$NEXT" --draft --target "$SHA" --title "$NEXT" --notes-file notes.md
+          # The draft is updated in place, so that a failure cannot lose it. A draft has
+          # no tag yet and is only found by its id.
+          drafts=$(gh api "repos/$GH_REPO/releases?per_page=100" --jq '.[] | select(.draft) | .id')
+          first=$(printf '%s\n' "$drafts" | head -n 1)
+          if [ -z "$first" ]; then
+            gh release create "$NEXT" --draft --target "$SHA" --title "$NEXT" --notes-file notes.md
+            exit 0
+          fi
+          gh api --method PATCH "repos/$GH_REPO/releases/$first" -f tag_name="$NEXT" \
+            -f target_commitish="$SHA" -f name="$NEXT" -F body=@notes.md --silent
+          for id in $(printf '%s\n' "$drafts" | tail -n +2); do
+            gh api --method DELETE "repos/$GH_REPO/releases/$id" --silent
+          done
