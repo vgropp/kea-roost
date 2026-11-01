@@ -301,6 +301,17 @@ func explain(in explainInput) (*Explanation, error) {
 	return e, nil
 }
 
+// containsAddress looks for a whole address, so that 192.0.2.1 does not match
+// 192.0.2.10.
+func containsAddress(text, ip string) bool {
+	if ip == "" {
+		return false
+	}
+	return slices.Contains(strings.FieldsFunc(text, func(r rune) bool {
+		return r != '.' && (r < '0' || r > '9')
+	}), ip)
+}
+
 func trimName(name string) string { return strings.TrimSuffix(name, ".") }
 
 // Client gathers what is known about a MAC, an address or a hostname. Sources that
@@ -464,7 +475,7 @@ func (m *Manager) Client(ctx context.Context, id string) (*ClientView, error) {
 	}
 	for _, a := range entries {
 		text := strings.ToLower(a.Target)
-		if mac != "" && strings.Contains(text, mac) || v.IPAddress != "" && (text == v.IPAddress || strings.Contains(text, v.IPAddress+" ")) {
+		if mac != "" && strings.Contains(text, mac) || containsAddress(text, v.IPAddress) {
 			if v.History = append(v.History, a); len(v.History) == clientAuditLimit {
 				break
 			}

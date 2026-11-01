@@ -707,3 +707,42 @@ func TestLeaseDeleteWaitsForRunningChange(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAuditNamesTheReservation(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	in := input()
+	if _, err := e.mgr.CreateReservation(ctx, "alice", in); err != nil {
+		t.Fatal(err)
+	}
+	if a := e.audit(t); !strings.HasSuffix(a.Target, "(nas, 192.0.2.10)") {
+		t.Errorf("add: %s", a.Target)
+	}
+	in.Hostname, in.IPAddress = "nas2", "192.0.2.11"
+	if _, err := e.mgr.UpdateReservation(ctx, "alice", in); err != nil {
+		t.Fatal(err)
+	}
+	if a := e.audit(t); !strings.HasSuffix(a.Target, "(nas, 192.0.2.10 -> nas2, 192.0.2.11)") {
+		t.Errorf("update: %s", a.Target)
+	}
+	in.Comment = "only a note"
+	if _, err := e.mgr.UpdateReservation(ctx, "alice", in); err != nil {
+		t.Fatal(err)
+	}
+	if a := e.audit(t); !strings.HasSuffix(a.Target, "(nas2, 192.0.2.11)") {
+		t.Errorf("no address change: %s", a.Target)
+	}
+	in.NewIdentifierType, in.NewIdentifier = "hw-address", "aa:bb:cc:00:00:77"
+	if _, err := e.mgr.UpdateReservation(ctx, "alice", in); err != nil {
+		t.Fatal(err)
+	}
+	if a := e.audit(t); !strings.HasSuffix(a.Target, "(nas2, 192.0.2.11)") || !strings.Contains(a.Target, "aa:bb:cc:00:00:77") {
+		t.Errorf("replace: %s", a.Target)
+	}
+	if _, err := e.mgr.DeleteReservation(ctx, "alice", 1, "hw-address", "aa:bb:cc:00:00:77"); err != nil {
+		t.Fatal(err)
+	}
+	if a := e.audit(t); a.Action != "reservation-del" || !strings.HasSuffix(a.Target, "(nas2, 192.0.2.11)") {
+		t.Errorf("delete: %s", a.Target)
+	}
+}

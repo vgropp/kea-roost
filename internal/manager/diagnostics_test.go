@@ -332,3 +332,36 @@ func TestDeviceAwayFromItsReservation(t *testing.T) {
 		t.Fatalf("step: %+v", s)
 	}
 }
+
+func TestContainsAddress(t *testing.T) {
+	for text, want := range map[string]bool{
+		"192.0.2.1":                          true,
+		"subnet 0, x (nas, 192.0.2.1)":       true,
+		"x (nas, 192.0.2.1 -> b, 192.0.2.2)": true,
+		"x (nas, 192.0.2.10)":                false,
+		"x (nas, 10.192.0.2.1)":              false,
+	} {
+		if got := containsAddress(text, "192.0.2.1"); got != want {
+			t.Errorf("%q: %v", text, got)
+		}
+	}
+	if containsAddress("x", "") {
+		t.Error("an empty address matches nothing")
+	}
+}
+
+func TestClientHistoryFindsAReservationByItsAddress(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	in := ReservationInput{SubnetID: 1, IdentifierType: "client-id", Identifier: "01:02:03:04", IPAddress: "192.0.2.10", Hostname: "nas"}
+	if res, err := e.mgr.CreateReservation(ctx, "alice", in); err != nil || res.Status != StatusOK {
+		t.Fatalf("%+v %v", res, err)
+	}
+	c, err := e.mgr.Client(ctx, "192.0.2.10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.History) != 1 {
+		t.Fatalf("history: %+v", c.History)
+	}
+}

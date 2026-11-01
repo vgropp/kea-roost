@@ -66,7 +66,8 @@ lease into a static DHCP reservation in two clicks.
   server, see [DNS names](#dns-names-for-reservations).
 - **Prometheus metrics:** compatible with the common Kea exporters, plus findings, HA and
   devices, see [Prometheus metrics](#prometheus-metrics).
-- **Audit log:** every change with its user and result, and downloadable backups.
+- **Audit log:** every change with its user and result, with the name and address of a
+  reservation, filters and pages, and downloadable backups.
 - **Safety checks:** see [How changes are applied](#how-changes-are-applied).
 - **Interface:** Classic and Modern themes in light and dark, usable on a phone,
   without external resources or telemetry.

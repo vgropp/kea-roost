@@ -343,3 +343,5 @@ html[data-theme="classic"] .dialog-close { font-size: 20px; padding: 0 8px; }
 .setting-help { font-size: 12px; }
 .setting-name .tag { margin-left: 6px; }
 @media (max-width: 640px) { .setting { grid-template-columns: 1fr; gap: 4px; } }
+.pager { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 8px; }
+.pager:empty { display: none; }
