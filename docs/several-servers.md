@@ -21,8 +21,8 @@ reservations, client classes and subnets of all servers the same:
   a peer match it, which also deletes what only the peer holds. Subnets that are
   missing, extra or hold their own reservations stay manual.
 - Deleting a lease also deletes it on the peers.
-- The HA page operates the pair: start and end maintenance, sync leases, reset and
-  continue. It offers what the state of the server allows, and every action is
+- The Servers page also operates HA: start and end maintenance, sync leases, reset
+  and continue. Each server offers what its HA state allows, and every action is
   written to the audit log. Maintenance needs both servers in `KEA_PEERS`.
 
 Every peer needs the hooks of the primary, a control socket with the same login,
@@ -31,10 +31,11 @@ areas, such as global options, are neither compared nor copied.
 
 ## In the interface
 
-The dashboard lists every server, and the Servers page shows what differs from the primary.
+The dashboard lists every server. The Servers page shows the HA connection of the pair
+and one card per server with its HA state, the HA actions and what differs from the
+primary.
 
-![Servers page comparing two Kea servers](screenshots/servers.png)
+![Servers page with the HA connection and two Kea servers](screenshots/servers.png)
 
-The HA page shows the state of the pair and offers what that state allows.
-
-![HA page with the state of both servers and the actions to operate them](screenshots/ha.png)
+With a single server, the page shows its state, version and uptime, and the HA state
+when the HA hook is loaded.

@@ -282,7 +282,7 @@ pages.dashboard = () => {
         tile('Server', d.server.reachable ? state('ok', 'reachable') : state('crit', 'unreachable'), d.server.name),
         tile('Kea version', d.server.version || '–', d.server.uptime ? 'Uptime ' + fmtDuration(d.server.uptime) : ''),
         tile('HA state', ha ? state(d.ha[0].severity, ha['ha-servers'].local.state) : state('neutral', d.server.reachable ? 'no HA' : 'unknown'),
-          ha ? ha['ha-servers'].local.role : '', '#/ha'),
+          ha ? ha['ha-servers'].local.role : '', '#/servers'),
         tile('Active leases', fmtCount(d.activeLeases), d.totalLeases != null ? `${fmtCount(d.totalLeases)} total` : '', '#/leases'),
         tile('Reservations', fmtCount(d.reservations), '', '#/reservations'),
         tile('Subnets', fmtCount(d.subnetCount), '', '#/subnets'),
@@ -1002,28 +1002,6 @@ function addressMap(s) {
   return el;
 }
 
-pages.ha = () => {
-  const body = h('div', {});
-  const load = async () => {
-    try {
-      const d = await api('GET', 'dashboard');
-      updateChip(d.server);
-      const warnings = d.server.reachable ? d.haWarnings : d.warnings;
-      const content = [notes(warnings), ...d.ha.map(haCard)].filter(Boolean);
-      if (!d.ha.length && d.server.reachable) content.push(h('div', { class: 'panel empty' }, 'No HA status: hook libdhcp_ha is not loaded'));
-      if (meta.writable && d.ha.length) {
-        const { servers } = await api('GET', 'servers');
-        content.push(h('h2', {}, 'Operate'), ...servers.filter(s => s.ha).map(s => haActions(s, load)));
-      }
-      body.replaceChildren(...content);
-    } catch (err) {
-      body.replaceChildren(errorNote(err));
-    }
-  };
-  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'High availability'), refreshControls(load)), body);
-  load();
-};
-
 const HA_ACTIONS = {
   maintenance: {
     label: 'Start maintenance',
@@ -1038,41 +1016,37 @@ const HA_ACTIONS = {
   continue: { label: 'Continue', text: s => `Resumes the HA state machine of ${s.ha.name} if it is paused.` },
 };
 
-function haActions(s, reload) {
+function haButtons(s, reload) {
+  if (!s.ha || !meta.writable) return null;
   const path = action => `servers/${encodeURIComponent(s.name)}/ha/${action}`;
-  return h('div', { class: 'panel pad server-card' },
-    h('h3', {}, s.name), h('p', {}, state('neutral', s.ha.state)),
-    s.ha.actions.length ? h('div', { class: 'ha-actions' }, s.ha.actions.map(a => h('button', {
-      onclick: () => confirmDialog(HA_ACTIONS[a].label + ': ' + s.name, HA_ACTIONS[a].text(s), HA_ACTIONS[a].label,
-        async () => showResult(await api('POST', path(a)), reload)),
-    }, HA_ACTIONS[a].label))) : h('p', { class: 'muted' }, 'Nothing to do in this state'));
+  return h('div', { class: 'ha-actions' }, s.ha.actions.map(a => h('button', {
+    onclick: () => confirmDialog(HA_ACTIONS[a].label + ': ' + s.name, HA_ACTIONS[a].text(s), HA_ACTIONS[a].label,
+      async () => showResult(await api('POST', path(a)), reload)),
+  }, HA_ACTIONS[a].label)));
 }
 
-function haCard(ha) {
-  const dl = (key, value) => [h('dt', {}, key), h('dd', {}, value)];
+const HA_STATE_KIND = {
+  'hot-standby': 'ok', 'load-balancing': 'ok', backup: 'ok', 'passive-backup': 'ok',
+  terminated: 'crit', 'partner-down': 'warn', 'in-maintenance': 'warn', 'partner-in-maintenance': 'warn',
+  waiting: 'warn', syncing: 'warn', ready: 'warn',
+};
+
+// haLink holds what belongs to the pair rather than to one server, as the primary sees it.
+function haLink(ha) {
   const { local, remote } = ha['ha-servers'];
   const yes = (flag, bad) => flag === bad ? state('crit', flag ? 'yes' : 'no') : state('ok', flag ? 'yes' : 'no');
-  return h('div', {},
-    h('p', {}, h('span', { class: 'tag' }, ha['ha-mode'])),
-    h('div', { class: 'columns' },
-      h('div', { class: 'panel pad' },
-        h('h3', {}, 'This server: ' + local['server-name']),
-        h('dl', { class: 'kv' },
-          dl('Role', local.role),
-          dl('State', state(ha.severity, local.state)),
-          dl('Scopes', (local.scopes || []).join(', ') || '–'),
-          dl('System time (UTC)', local['system-time'] || '–'),
-          dl('Unsent updates', fmtCount(ha.unsentUpdates)))),
-      remote ? h('div', { class: 'panel pad' },
-        h('h3', {}, 'Partner: ' + remote['server-name']),
-        h('dl', { class: 'kv' },
-          dl('Role', remote.role),
-          dl('Last state', remote['last-state'] || '–'),
-          dl('In touch', yes(remote['in-touch'], false)),
-          dl('Communication interrupted', yes(remote['communication-interrupted'], true)),
-          dl('Last contact', remote.age != null ? fmtDuration(remote.age) : '–'),
-          dl('Clock skew', remote['clock-skew'] != null ? remote['clock-skew'] + ' s' : '–'),
-          dl('Unacked clients', fmtCount(remote['unacked-clients'])))) : null));
+  return h('div', { class: 'panel pad ha-link' },
+    h('h3', {}, 'HA connection ', h('span', { class: 'tag' }, ha['ha-mode'])),
+    h('dl', { class: 'facts' }, [
+      ['Scopes', (local.scopes || []).join(', ') || '–'],
+      remote && ['In touch', yes(remote['in-touch'], false)],
+      remote && ['Communication interrupted', yes(remote['communication-interrupted'], true)],
+      remote && ['Last contact', remote.age != null ? fmtDuration(remote.age) : '–'],
+      remote && ['Clock skew', remote['clock-skew'] != null ? remote['clock-skew'] + ' s' : '–'],
+      ['Unsent updates', fmtCount(ha.unsentUpdates)],
+      remote && ['Unacked clients', fmtCount(remote['unacked-clients'])],
+      ['System time (UTC)', local['system-time'] || '–'],
+    ].filter(Boolean).map(([key, value]) => h('div', {}, h('dt', {}, key), h('dd', {}, value)))));
 }
 
 pages.audit = () => {
@@ -1124,22 +1098,28 @@ pages.audit = () => {
 };
 
 pages.servers = () => {
-  const notice = h('div');
-  const list = h('div');
+  const body = h('div');
   const load = async () => {
     try {
-      const { servers } = await api('GET', 'servers');
-      list.replaceChildren(...servers.map(s => serverCard(s, load)));
-      notice.replaceChildren();
+      const [d, { servers }] = await Promise.all([api('GET', 'dashboard'), api('GET', 'servers')]);
+      updateChip(d.server);
+      const several = servers.length > 1;
+      body.replaceChildren(...[
+        notes(d.server.reachable ? d.haWarnings : d.warnings),
+        several ? h('p', { class: 'muted' }, 'Changes run on the primary first, then on each peer. Reservations, classes and subnets are compared.') : null,
+        d.ha.length ? haLink(d.ha[0]) : null,
+        !d.ha.length && d.server.reachable ? h('p', { class: 'muted' }, 'No HA: the hook libdhcp_ha is not loaded.') : null,
+        h('div', { class: 'columns server-list' }, servers.map(s => serverCard(s, d.servers.find(r => r.name === s.name) ?? { uptime: d.server.uptime, activeLeases: d.activeLeases }, several, load))),
+      ].filter(Boolean));
     } catch (err) {
-      notice.replaceChildren(errorNote(err));
+      body.replaceChildren(errorNote(err));
     }
   };
-  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Servers'), h('button', { onclick: load }, 'Refresh')),
-    h('p', { class: 'muted' }, 'Changes run on the primary first, then on each peer. Reservations, classes and subnets are compared.'),
-    notice, list);
+  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Servers'), refreshControls(load)), body);
   load();
 };
+// HA used to have a page of its own
+pages.ha = pages.servers;
 
 function serverOverview(rows) {
   const table = dataTable({
@@ -1169,17 +1149,25 @@ function serverState(s) {
   return s.differences.length ? state('warn', s.differences.length === 1 ? '1 difference' : `${s.differences.length} differences`) : state('ok', 'in sync');
 }
 
-function serverCard(s, reload) {
+// serverCard joins the comparison of a server with its row of the dashboard.
+function serverCard(s, row, several, reload) {
   const syncable = s.differences.filter(d => !d.manual);
   const removed = syncable.filter(d => d.change === 'extra').length;
   const changeText = { missing: 'missing here', extra: 'only here', different: 'different' };
   return h('div', { class: 'panel pad server-card' },
     h('h3', {}, s.name),
-    h('dl', { class: 'kv' },
-      h('dt', {}, 'Role'), h('dd', {}, s.role),
-      h('dt', {}, 'Version'), h('dd', {}, s.version || '–'),
-      h('dt', {}, 'State'), h('dd', {}, serverState(s))),
+    kvRows([
+      ['State', s.reachable ? state('ok', 'reachable') : state('crit', 'unreachable')],
+      several && ['Role', s.role],
+      ['Version', s.version || '–'],
+      row?.uptime && ['Uptime', fmtDuration(row.uptime)],
+      row?.activeLeases != null && ['Active leases', fmtCount(row.activeLeases)],
+      s.ha && ['HA role', s.ha.name.toLowerCase() === s.name.toLowerCase() ? s.ha.role : `${s.ha.role} (${s.ha.name})`],
+      s.ha && ['HA state', state(HA_STATE_KIND[s.ha.state] || 'neutral', s.ha.state)],
+      several && ['Configuration', serverState(s)],
+    ]),
     s.error ? h('div', { class: 'note crit' }, s.error) : null,
+    haButtons(s, reload),
     s.differences.length ? h('ul', { class: 'steps' }, s.differences.map(d => h('li', {},
       state(d.change === 'extra' ? 'crit' : 'warn', changeText[d.change]),
       h('span', { class: 'detail' }, `${d.kind} ${d.target}${d.manual ? ' (fix in the configuration file)' : ''}`)))) : null,
@@ -1737,11 +1725,12 @@ async function start() {
     [['dashboard', 'Dashboard']],
     [['leases', 'Leases'], ['reservations', 'Reservations'], meta.devices && ['devices', 'Devices']],
     [['classes', 'Classes'], ['subnets', 'Subnets']],
-    [['ha', 'HA'], meta.peers && ['servers', 'Servers']],
-    [['health', 'Health'], meta.writable && ['audit', 'Audit log'], meta.writable && ['settings', 'Settings']],
-  ];
+    [['health', 'Health']],
+    [['servers', 'Servers'], meta.writable && ['audit', 'Audit log']],
+    [meta.writable && ['settings', 'Settings']],
+  ].map(group => group.filter(Boolean)).filter(group => group.length);
   document.getElementById('nav').replaceChildren(...groups.map(group => h('div', { class: 'nav-group' },
-    group.filter(Boolean).map(([page, label]) => h('a', { href: '#/' + page, 'data-page': page }, label)))));
+    group.map(([page, label]) => h('a', { href: '#/' + page, 'data-page': page }, label)))));
   document.querySelector('.brand').title = 'Kea Roost ' + meta.version;
   document.getElementById('server-chip').replaceChildren();
   document.getElementById('account').replaceChildren(h('button', { class: 'small account-button', title: 'Password, 2FA, log out', onclick: accountDialog },

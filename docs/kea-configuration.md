@@ -9,7 +9,7 @@ The manager does not change the Kea installation. Tested with Kea 3.0.3 and 3.0.
 
 - a `control-sockets` entry of type `http` or `https`,
 - the hooks `libdhcp_lease_cmds.so` and `libdhcp_host_cmds.so`,
-- `libdhcp_ha.so` for the HA page,
+- `libdhcp_ha.so` for the HA state and actions on the Servers page,
 - `libdhcp_subnet_cmds.so` to edit subnets on the subnets page,
 - `libdhcp_class_cmds.so` to edit client classes on the classes page.
 

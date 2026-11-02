@@ -291,7 +291,13 @@ html[data-theme="classic"] th { text-transform: uppercase; font-size: 11px; lett
 html[data-theme="classic"] td { padding: 3px 10px; }
 html[data-theme="classic"] td.mono { font-size: 12px; }
 .server-card { margin-bottom: 12px; }
-.ha-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.ha-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+.ha-link { margin-bottom: 12px; }
+.ha-link h3 { margin: 0 0 8px; }
+.ha-link .facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px 24px; margin: 0; }
+.facts dt { color: var(--ink-3); font-size: 12px; }
+.facts dd { margin: 2px 0 0; font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+.server-list { align-items: start; }
 dialog.wide { width: min(1000px, calc(100vw - 24px)); }
 dialog h3 { margin: 16px 0 8px; font: 600 13px var(--sans); color: var(--ink-2, var(--ink)); }
 .client-sub { margin: -8px 0 12px; color: var(--ink-3); font: 12px var(--mono); overflow-wrap: anywhere; }

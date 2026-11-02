@@ -35,6 +35,9 @@ const (
 // Replaced by the screenshots, which show more devices than the tests need.
 var monitorAnswer, dashboardAnswer string
 
+// withoutPeer starts the next browser with a single Kea server without HA.
+var withoutPeer bool
+
 type browser struct {
 	t    *testing.T
 	ctx  context.Context
@@ -99,16 +102,25 @@ func startWith(t *testing.T, accounts web.Auth, loggedIn bool) *browser {
 	}
 	mgr := manager.New(client, store, "primary")
 	mgr.SetARPMonitor(monitor.URL)
+	if withoutPeer {
+		fake.HA = nil
+	}
 	peer := keatest.New()
 	seed(peer)
 	peer.Hosts = append(peer.Hosts, map[string]any{"subnet-id": 0, "hw-address": "00:00:0c:00:00:fe", "ip-address": "192.0.2.250"})
+	// the peer is the other half of the pair
+	servers := peer.HA[0].(map[string]any)["ha-servers"].(map[string]any)
+	local, remote := servers["local"].(map[string]any), servers["remote"].(map[string]any)
+	local["server-name"], local["role"], remote["server-name"], remote["role"] = "server2", "standby", "server1", "primary"
 	peerSrv := httptest.NewServer(peer)
 	t.Cleanup(peerSrv.Close)
 	peerClient, err := kea.NewClient(kea.Options{URL: peerSrv.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgr.AddPeer("standby", peerClient)
+	if !withoutPeer {
+		mgr.AddPeer("standby", peerClient)
+	}
 	dashboard := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if dashboardAnswer != "" {
 			fmt.Fprint(w, dashboardAnswer)
@@ -574,14 +586,33 @@ func TestDashboardListsBothServers(t *testing.T) {
 	b.poll(`document.body.innerText.includes('standby') && document.body.innerText.includes('1 differ')`)
 }
 
-func TestHAPageOperatesAServer(t *testing.T) {
+func TestServersPageOperatesHA(t *testing.T) {
 	b := start(t)
-	b.do(chromedp.Navigate(b.url + "/#/ha"))
+	b.do(chromedp.Navigate(b.url + "/#/servers"))
 	b.poll(`[...document.querySelectorAll('button')].some(x => x.textContent === 'Start maintenance')`)
 	b.exec(`[...document.querySelectorAll('.server-card')].find(x => x.textContent.includes('standby')).querySelector('button').click()`)
 	b.poll(`document.querySelector('dialog')?.textContent.includes('takes over all DHCP traffic')`)
 	b.exec(`document.querySelector('dialog button.solid').click()`)
 	b.poll(`document.querySelector('dialog h2')?.textContent === 'Change succeeded'`)
+}
+
+func TestServersPageWithOneServer(t *testing.T) {
+	withoutPeer = true
+	b := start(t)
+	withoutPeer = false
+	b.do(chromedp.Navigate(b.url + "/#/servers"))
+	b.poll(`document.querySelectorAll('.server-card').length === 1`)
+	got := b.text(`document.querySelector('main').innerText`)
+	for _, part := range []string{"No HA", "3.0.3"} {
+		if !strings.Contains(got, part) {
+			t.Errorf("%s missing in %s", part, got)
+		}
+	}
+	for _, part := range []string{"Configuration", "Changes run on the primary", "Copy from primary"} {
+		if strings.Contains(got, part) {
+			t.Errorf("%s belongs to several servers: %s", part, got)
+		}
+	}
 }
 
 func TestClientPopupExplainsAddress(t *testing.T) {
@@ -654,7 +685,7 @@ func TestNavigationIsGrouped(t *testing.T) {
 	b := start(t)
 	b.open("dashboard", "Dashboard")
 	got := b.text(`[...document.querySelectorAll('.nav-group')].map(g => [...g.children].map(a => a.textContent).join('+')).join(' | ')`)
-	if want := "Dashboard | Leases+Reservations+Devices | Classes+Subnets | HA+Servers | Health+Audit log+Settings"; got != want {
+	if want := "Dashboard | Leases+Reservations+Devices | Classes+Subnets | Health | Servers+Audit log | Settings"; got != want {
 		t.Fatalf("got %s", got)
 	}
 	b.open("subnets", "Subnets")
