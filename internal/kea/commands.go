@@ -1,8 +1,11 @@
 package kea
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -209,25 +212,48 @@ func (c *Client) Commands(ctx context.Context) ([]string, error) {
 
 // SubnetGet returns the complete entry of a subnet, or nil if it does not exist.
 func (c *Client) SubnetGet(ctx context.Context, id int64) (map[string]any, error) {
-	r, err := c.call(ctx, "subnet4-get", map[string]any{"id": id}, ResultEmpty)
+	return c.subnetGet(ctx, "subnet4", id)
+}
+
+// Subnet6Get returns the complete entry of an IPv6 subnet, or nil if it does not
+// exist.
+func (c *Client) Subnet6Get(ctx context.Context, id int64) (map[string]any, error) {
+	return c.subnetGet(ctx, "subnet6", id)
+}
+
+func (c *Client) subnetGet(ctx context.Context, key string, id int64) (map[string]any, error) {
+	r, err := c.call(ctx, key+"-get", map[string]any{"id": id}, ResultEmpty)
 	if err != nil {
 		return nil, err
 	}
-	var out struct {
-		Subnets []map[string]any `json:"subnet4"`
-	}
-	if err := decodeArguments(r, "subnet4-get", &out); err != nil {
+	var out map[string]json.RawMessage
+	if err := decodeArguments(r, key+"-get", &out); err != nil {
 		return nil, err
 	}
-	if len(out.Subnets) == 0 {
+	var list []map[string]any
+	if raw := out[key]; raw != nil {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		if err := dec.Decode(&list); err != nil {
+			return nil, fmt.Errorf("cannot read answer to %s-get: %w", key, err)
+		}
+	}
+	if len(list) == 0 {
 		return nil, nil
 	}
-	return out.Subnets[0], nil
+	return list[0], nil
 }
 
-// SubnetUpdate overwrites a whole subnet in the running configuration.
+// SubnetUpdate overwrites a whole subnet in the running configuration. Kea keeps
+// the reservations of the subnet, which the entry must not contain.
 func (c *Client) SubnetUpdate(ctx context.Context, subnet map[string]any) error {
 	_, err := c.call(ctx, "subnet4-update", map[string]any{"subnet4": []any{subnet}})
+	return err
+}
+
+// Subnet6Update overwrites a whole IPv6 subnet, like SubnetUpdate.
+func (c *Client) Subnet6Update(ctx context.Context, subnet map[string]any) error {
+	_, err := c.call(ctx, "subnet6-update", map[string]any{"subnet6": []any{subnet}})
 	return err
 }
 
@@ -269,6 +295,37 @@ func (c *Client) ClassDel(ctx context.Context, name string) error {
 
 // Statistics returns the newest sample of every integer statistic.
 func (c *Client) Statistics(ctx context.Context) (map[string]int64, error) {
+	raw, err := c.statistics(ctx)
+	if err != nil {
+		return nil, err
+	}
+	stats := make(map[string]int64, len(raw))
+	for name, n := range raw {
+		if v, err := n.Int64(); err == nil {
+			stats[name] = v
+		}
+	}
+	return stats, nil
+}
+
+// StatisticValues returns the statistics as floats. The address counts of IPv6
+// pools exceed int64, and a metric only needs them approximately.
+func (c *Client) StatisticValues(ctx context.Context) (map[string]float64, error) {
+	raw, err := c.statistics(ctx)
+	if err != nil {
+		return nil, err
+	}
+	stats := make(map[string]float64, len(raw))
+	for name, n := range raw {
+		if v, err := strconv.ParseFloat(n.String(), 64); err == nil {
+			stats[name] = v
+		}
+	}
+	return stats, nil
+}
+
+// statistics returns the latest sample of every statistic.
+func (c *Client) statistics(ctx context.Context) (map[string]json.Number, error) {
 	r, err := c.call(ctx, "statistic-get-all", map[string]any{})
 	if err != nil {
 		return nil, err
@@ -277,15 +334,13 @@ func (c *Client) Statistics(ctx context.Context) (map[string]int64, error) {
 	if err := decodeArguments(r, "statistic-get-all", &raw); err != nil {
 		return nil, err
 	}
-	stats := make(map[string]int64, len(raw))
+	stats := make(map[string]json.Number, len(raw))
 	for name, samples := range raw {
 		if len(samples) == 0 || len(samples[0]) == 0 {
 			continue
 		}
 		if n, ok := samples[0][0].(json.Number); ok {
-			if v, err := n.Int64(); err == nil {
-				stats[name] = v
-			}
+			stats[name] = n
 		}
 	}
 	return stats, nil

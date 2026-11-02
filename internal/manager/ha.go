@@ -57,8 +57,7 @@ func (h *ServerHA) offer() {
 
 // haStates asks every server for its HA state. Entries stay nil for servers that
 // do not answer or run without HA.
-func (m *Manager) haStates(ctx context.Context) []*ServerHA {
-	servers := m.servers()
+func (m *Manager) haStates(ctx context.Context, servers []server) []*ServerHA {
 	states := make([]*ServerHA, len(servers))
 	for i, s := range servers {
 		status, err := s.client.Status(ctx)
@@ -90,17 +89,26 @@ func (m *Manager) haStates(ctx context.Context) []*ServerHA {
 // server that keeps running, so they are addressed to the partner of the server
 // the operator wants to take down.
 func (m *Manager) RunHA(ctx context.Context, user, name, action string) (*Result, error) {
+	return m.runHA(ctx, user, name, action, false)
+}
+
+// RunHA6 runs an HA action for a kea-dhcp6 server.
+func (m *Manager) RunHA6(ctx context.Context, user, name, action string) (*Result, error) {
+	return m.runHA(ctx, user, name, action, true)
+}
+
+func (m *Manager) runHA(ctx context.Context, user, name, action string, v6 bool) (*Result, error) {
 	ctx, cancel := detached(ctx)
 	defer cancel()
 	m.writeMu.Lock()
 	defer m.writeMu.Unlock()
 
-	servers := m.servers()
+	servers := m.serversOf(v6)
 	i := slices.IndexFunc(servers, func(s server) bool { return s.name == name })
 	if i < 0 {
 		return nil, ErrNotFound
 	}
-	h := m.haStates(ctx)[i]
+	h := m.haStates(ctx, servers)[i]
 	if h == nil {
 		return nil, &ValidationError{Problems: []string{name + " reports no HA state"}}
 	}
@@ -131,5 +139,5 @@ func (m *Manager) RunHA(ctx context.Context, user, name, action string) (*Result
 			res.Status, res.Message = StatusPartial, "Kea did not answer. It is unclear whether the action ran. Please check the state."
 		}
 	}
-	return m.finish(change{user: user, action: command, target: name}, res), nil
+	return m.finish(change{user: user, action: command, target: label(name, v6)}, res), nil
 }

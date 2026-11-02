@@ -334,12 +334,16 @@ func firstSet(values ...*int64) *int64 {
 }
 
 // mergeOptions applies option scopes from outermost to innermost.
-func mergeOptions(scopes ...[]rawOption) []Option {
+func mergeOptions(scopes ...[]rawOption) []Option { return mergeOptionsIn("dhcp4", scopes...) }
+
+// mergeOptionsIn resolves inheritance for the options of one space; an option
+// without space belongs to the standard one.
+func mergeOptionsIn(space string, scopes ...[]rawOption) []Option {
 	out := []Option{}
 	index := map[string]int{}
 	for _, scope := range scopes {
 		for _, o := range scope {
-			if o.Space != "" && o.Space != "dhcp4" {
+			if o.Space != "" && o.Space != space {
 				continue
 			}
 			key := o.Name

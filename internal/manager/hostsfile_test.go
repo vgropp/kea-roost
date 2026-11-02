@@ -187,3 +187,10 @@ func TestFailedChangeLeavesTheHostsFileAlone(t *testing.T) {
 		t.Fatal("no audit entry")
 	}
 }
+
+func TestHostsContentSkipsZones(t *testing.T) {
+	got := string(hostsContent([]kea.Host{{"hostname": "nas", "ip-addresses": []any{"fe80::1%x evil.example", "fd00:db8::10"}}}, nil))
+	if strings.Contains(got, "evil") || !strings.Contains(got, "fd00:db8::10 nas\n") {
+		t.Fatalf("%q", got)
+	}
+}

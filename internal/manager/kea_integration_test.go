@@ -1,6 +1,6 @@
 //go:build kea
 
-// Tests against the real kea-dhcp4 binary: go test -tags kea ./internal/manager
+// Tests against the real kea-dhcp4 and kea-dhcp6 binaries: go test -tags kea ./internal/manager
 // Each test starts a private server with a synthetic configuration. It listens on
 // no DHCP interface, only on a local control socket, so it cannot affect a network.
 package manager
@@ -278,7 +278,8 @@ func TestRealKeaSubnetEditSurvivesRestart(t *testing.T) {
 		t.Errorf("pools %v", got)
 	}
 	text, _ := json.Marshal(raw)
-	for _, want := range []string{`"valid-lifetime":3600`, `"min-valid-lifetime":3600`, `"max-valid-lifetime":3600`, `"data":"192.0.2.254"`,
+	// the bounds widen just enough: the maximum stays
+	for _, want := range []string{`"valid-lifetime":3600`, `"min-valid-lifetime":3600`, `"max-valid-lifetime":7200`, `"data":"192.0.2.254"`,
 		`"subnet-mask"`, `"boot-file-name":"boot.efi"`, `"next-server":"192.0.2.5"`} {
 		if !strings.Contains(string(text), want) {
 			t.Errorf("missing %s in %s", want, text)
@@ -632,5 +633,20 @@ func TestClientViewOfARealServer(t *testing.T) {
 	report := s.mgr.Health(ctx)
 	if report.Severity != SeverityOK || len(report.Traffic) != 1 {
 		t.Fatalf("report: %+v", report)
+	}
+}
+
+// subnet4-update keeps the reservations of the subnet, also after a restart.
+func TestRealKeaSubnetUpdateKeepsReservations(t *testing.T) {
+	s := startKea(t, dnsOption)
+	ctx := context.Background()
+	s.ok(s.mgr.CreateReservation(ctx, "test", ReservationInput{SubnetID: 1, IdentifierType: "hw-address", Identifier: "02:00:00:00:01:05", IPAddress: "192.0.2.25", Hostname: "scoped"}))
+	s.ok(s.mgr.UpdateSubnet(ctx, "test", 1, SubnetInput{Pools: []string{"192.0.2.150-192.0.2.199"}, Gateways: []string{"192.0.2.1"}, DNSServers: []string{"192.0.2.53"}, ValidLifetime: 7200}))
+	s.restart()
+	if s.host("192.0.2.25") == nil {
+		t.Fatal("the subnet reservation is gone")
+	}
+	if pools := fmt.Sprint(s.config()["subnet4"].([]any)[0].(map[string]any)["pools"]); !strings.Contains(pools, "192.0.2.150-192.0.2.199") {
+		t.Fatalf("pools: %s", pools)
 	}
 }

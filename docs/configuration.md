@@ -2,79 +2,71 @@
 
 [Back to the overview](../README.md)
 
-## Configuration
+## Environment
 
-All settings come from environment variables.
+Kea Roost reads its settings from environment variables, usually `.env`.
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `KEA_URL` | URL of the Kea HTTP control socket | required |
+| `KEA_URL` | Control socket of `kea-dhcp4`, see [Kea configuration](kea-configuration.md) | required |
 | `KEA_USER`, `KEA_PASSWORD` | Basic auth of the socket | empty |
 | `KEA_CA_FILE` | CA for HTTPS | system CAs |
 | `KEA_CLIENT_CERT`, `KEA_CLIENT_KEY` | Client certificate (for `cert-required`) | empty |
 | `KEA_SERVER_NAME` | Display name of the server | `kea` |
-| `KEA_PEERS` | Further Kea servers as `name=url,name=url`, same credentials as `KEA_URL` | empty |
-| `METRICS_ENABLED` | Set to `false` to remove `/metrics` | `true` |
+| `KEA_PEERS` | Further servers as `name=url,name=url`, see [Several Kea servers](several-servers.md) | empty |
+| `KEA6_URL` | Control socket of `kea-dhcp6`, see [IPv6](ipv6.md) | empty |
+| `KEA6_PEERS` | Further `kea-dhcp6` servers, like `KEA_PEERS` | empty |
+| `DNS_HOSTS_DIR`, `DNS_HOSTS_DOMAIN` | Hosts file of all reservations, see [DNS names](dns-names.md) | off |
+| `ARPMONITOR_URL` | [arpmonitor](devices.md#arpmonitor), base URL with port | empty |
+| `APDASHBOARD_URL` | [openwrt-ap-dashboard](devices.md#openwrt-ap-dashboard), base URL | empty |
+| `METRICS_ENABLED` | `false` removes `/metrics` | `true` |
 | `METRICS_USER`, `METRICS_PASSWORD` | Login for `/metrics`, see [Prometheus metrics](metrics.md) | open |
-| `DNS_HOSTS_DIR` | Folder for a hosts file of all reservations, see [DNS names](dns-names.md) | off |
-| `DNS_HOSTS_DOMAIN` | Domains added to reservation names without one, comma separated | empty |
 | `MANAGER_LISTEN` | Listen address | `:8080` |
-| `APDASHBOARD_URL` | Base URL of an [openwrt-ap-dashboard](https://github.com/vgropp/openwrt-ap-dashboard), adds WiFi clients to leases and devices | empty |
-| `MANAGER_BASE_PATH` | Subpath behind a reverse proxy that does not strip it, e.g. `/kea-roost` | empty |
-| `MANAGER_TRUSTED_PROXIES` | Addresses or networks of reverse proxies whose `X-Forwarded-For` names the client, comma separated, e.g. `192.0.2.10` | empty |
+| `MANAGER_BASE_PATH` | Subpath behind a proxy that keeps it, e.g. `/kea-roost` | empty |
+| `MANAGER_TRUSTED_PROXIES` | Proxies whose `X-Forwarded-For` is trusted, comma separated | empty |
 | `MANAGER_DATA_DIR` | Accounts, settings, backups and audit log | `/var/lib/kea-roost`, `/data` in the image |
-| `ARPMONITOR_URL` | Base URL of an [arpmonitor](https://github.com/vgropp/arpmonitor) with port and without path, enables the devices page | empty |
 
-`KEA_PASSWORD` and `METRICS_PASSWORD` can instead be read from a file through
-`KEA_PASSWORD_FILE` and `METRICS_PASSWORD_FILE`, for example a Docker secret.
+All `kea-dhcp6` and peer sockets use the login of `KEA_URL`. `KEA_PASSWORD` and
+`METRICS_PASSWORD` can also come from a file through `KEA_PASSWORD_FILE` and
+`METRICS_PASSWORD_FILE`, such as a Docker secret.
 
-The accounts of the interface are not part of the environment, see
-[Accounts](accounts.md). The interface itself only speaks HTTP, so TLS belongs in a
-reverse proxy in front of it. Do not expose the manager unprotected: backups contain the
-Kea configuration including plaintext passwords.
+Backups contain the Kea configuration with its passwords in plain text, so do not expose
+Kea Roost unprotected. It speaks HTTP only; TLS belongs in a proxy in front.
 
 ## Settings
 
 ![Settings page with time windows and thresholds](screenshots/settings.png)
 
-The Settings page holds limits and time windows: how far back the devices page and the
-review look, when a device counts as online, and the thresholds of warnings. They are
-saved in `settings.json` in the data volume and apply at once. Values that are not
-changed there keep their default. Below them, admins manage the [accounts](accounts.md).
-
-Addresses, logins and other settings of the deployment stay in the environment and
-never end up in this file.
+The Settings page holds time windows and thresholds: how far back the devices page and
+the review look, when a device counts as online, when warnings start, and the limit of
+failed logins. They are saved in `settings.json` in the data volume and apply at once.
+Below them, admins manage the [accounts](accounts.md).
 
 ## Behind a reverse proxy
 
-The manager can be served from a subpath such as `/kea-roost/`, because the
-interface only uses relative URLs. The URL needs the trailing slash, or the proxy
-has to redirect to it.
+The interface only uses relative URLs, so it can live under a subpath such as
+`/kea-roost/`, with the trailing slash.
 
-- If the proxy strips the subpath, nothing has to be set.
-- If it forwards the path unchanged, set `MANAGER_BASE_PATH` to the same subpath.
-
-For writes to pass the cross-origin check, the proxy has to keep the original
-`Host` header or send `X-Forwarded-Host`. With HTTPS at the proxy, it should also send
-`X-Forwarded-Proto: https`, so that the session cookie is limited to HTTPS.
-
-Failed logins are counted per address. Behind a proxy every request comes from the
-proxy, so name it in `MANAGER_TRUSTED_PROXIES`; the address of the client is then taken
-from `X-Forwarded-For`. The address Kea Roost sees for the proxy is in its log after a
-failed login. With the proxy on the Docker host, it is usually the gateway of the Docker
-bridge. Only name proxies there: any host in the list can claim any client address.
+- A proxy that strips the subpath needs nothing more; one that keeps it needs
+  `MANAGER_BASE_PATH`.
+- Writes pass the cross-origin check only if the proxy keeps the `Host` header or sends
+  `X-Forwarded-Host`.
+- With HTTPS at the proxy, send `X-Forwarded-Proto: https`, so the session cookie is
+  limited to HTTPS.
+- Failed logins are counted per address, and behind a proxy every request comes from
+  it. Name the proxy in `MANAGER_TRUSTED_PROXIES`, so the client address is taken from
+  `X-Forwarded-For`. Its address is in the log after a failed login; on the Docker host
+  it is usually the gateway of the Docker bridge. Name only proxies: any host in the
+  list can claim any client address.
 
 ## MAC vendors
 
-MAC addresses show their vendor as a tooltip, and the search covers it too.
-Locally assigned addresses, as used by phones, bridges and VMs, are marked
-`local`. The
-vendor table is embedded in the binary, so no internet access is needed at
-runtime. `go run ./cmd/oui-update` refreshes it from the IEEE data published by
+MACs show their vendor in a tooltip, and the search covers it. Locally assigned MACs,
+as used by phones, bridges and VMs, are marked `local`. The vendor table is built into
+the binary; `go run ./cmd/oui-update` refreshes it from the IEEE data published by
 Wireshark.
 
 ## Themes
 
-The header offers two themes, the dense and square Classic and the round and airy
-Modern. Each comes in light and dark, and Auto follows the system setting. The
-browser remembers the choice.
+Classic is dense and square, Modern round and airy. Each comes in light and dark, and
+Auto follows the system. The browser remembers the choice.

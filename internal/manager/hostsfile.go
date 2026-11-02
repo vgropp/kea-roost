@@ -48,7 +48,7 @@ func validDNSName(name string) bool {
 	return !slices.ContainsFunc(strings.Split(name, "."), func(label string) bool { return len(label) > maxDNSLabel })
 }
 
-// hostsContent renders one line per reservation that has an address and a name.
+// hostsContent renders one line per reserved address with a name, IPv4 and IPv6.
 func hostsContent(hosts []kea.Host, domains []string) []byte {
 	type entry struct {
 		ip   netip.Addr
@@ -57,20 +57,27 @@ func hostsContent(hosts []kea.Host, domains []string) []byte {
 	var entries []entry
 	for _, h := range hosts {
 		name := dnsName(h.Hostname())
-		ip, err := netip.ParseAddr(h.IP())
-		if err != nil || !validDNSName(name) {
+		if !validDNSName(name) {
 			continue
 		}
-		// a DNS server answers reverse lookups with the first name
-		names := []string{name}
-		if !strings.Contains(name, ".") {
-			names = names[:0]
-			for _, domain := range domains {
-				names = append(names, name+"."+domain)
+		for _, text := range append([]string{h.IP()}, h.IPs()...) {
+			ip, err := netip.ParseAddr(text)
+			// a zone is free text and would end up as names on the line
+			if err != nil || ip.Zone() != "" {
+				continue
 			}
-			names = append(names, name)
+			ip = ip.Unmap()
+			// a DNS server answers reverse lookups with the first name
+			names := []string{name}
+			if !strings.Contains(name, ".") {
+				names = names[:0]
+				for _, domain := range domains {
+					names = append(names, name+"."+domain)
+				}
+				names = append(names, name)
+			}
+			entries = append(entries, entry{ip, ip.String() + " " + strings.Join(names, " ")})
 		}
-		entries = append(entries, entry{ip, ip.String() + " " + strings.Join(names, " ")})
 	}
 	slices.SortFunc(entries, func(a, b entry) int { return a.ip.Compare(b.ip) })
 	var out bytes.Buffer
@@ -79,6 +86,29 @@ func hostsContent(hosts []kea.Host, domains []string) []byte {
 		out.WriteString(e.line + "\n")
 	}
 	return out.Bytes()
+}
+
+// namedHosts6 returns the IPv6 reservations. One without a hostname takes the name
+// of the IPv4 reservation of its MAC, so that a device gets A and AAAA under one name.
+func (m *Manager) namedHosts6(ctx context.Context, hosts4 []kea.Host) ([]kea.Host, error) {
+	subnets, err := m.subnets6(ctx)
+	if err != nil {
+		return nil, err
+	}
+	hosts, err := m.hosts6(ctx, subnets)
+	if err != nil {
+		return nil, err
+	}
+	_, byMAC := indexHosts(hosts4)
+	for i, h := range hosts {
+		if idType, id := h.Identifier(); h.Hostname() == "" && idType == "hw-address" {
+			if d, ok := byMAC[strings.ToLower(id)]; ok {
+				named := kea.Host{"hostname": d.Hostname(), "ip-addresses": h["ip-addresses"]}
+				hosts[i] = named
+			}
+		}
+	}
+	return hosts, nil
 }
 
 // writeHostsFile replaces the file in one step, and only if something changed: a
@@ -130,6 +160,13 @@ func (m *Manager) refreshHosts(ctx context.Context) error {
 	hosts, err := m.allHosts(ctx, subnets)
 	if err != nil {
 		return err
+	}
+	if m.kea6 != nil {
+		v6, err := m.namedHosts6(ctx, hosts)
+		if err != nil {
+			return fmt.Errorf("IPv6: %w", err)
+		}
+		hosts = append(hosts, v6...)
 	}
 	return writeHostsFile(m.hostsPath, hostsContent(hosts, m.hostsDomains))
 }

@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-var backupName = regexp.MustCompile(`^kea-config-\d{8}T\d{9}Z-[a-z-]+\.json$`)
+var backupName = regexp.MustCompile(`^kea-config-\d{8}T\d{9}Z-[a-z0-9-]+\.json$`)
 
 // ErrInvalidBackup rejects names that are not backups of this manager.
 var ErrInvalidBackup = errors.New("invalid backup name")
@@ -37,10 +37,23 @@ func NewStore(dir string) (*Store, error) {
 // SaveBackup stores a configuration and returns the file name.
 func (s *Store) SaveBackup(reason string, config []byte, now time.Time) (string, error) {
 	now = now.UTC()
-	name := fmt.Sprintf("kea-config-%s%03dZ-%s.json", now.Format("20060102T150405"), now.Nanosecond()/1e6, reason)
-	f, err := os.OpenFile(filepath.Join(s.dir, "backups", name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return "", err
+	base := fmt.Sprintf("kea-config-%s%03dZ-%s", now.Format("20060102T150405"), now.Nanosecond()/1e6, reason)
+	// two changes within one millisecond get a number instead of failing
+	var f *os.File
+	var name string
+	for n := 1; ; n++ {
+		name = base + ".json"
+		if n > 1 {
+			name = fmt.Sprintf("%s-%d.json", base, n)
+		}
+		var err error
+		f, err = os.OpenFile(filepath.Join(s.dir, "backups", name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrExist) || n == 100 {
+			return "", err
+		}
 	}
 	if _, err := f.Write(config); err != nil {
 		f.Close()

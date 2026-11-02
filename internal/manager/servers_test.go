@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http/httptest"
 	"slices"
@@ -437,5 +438,47 @@ func TestSingleServerNeverProbes(t *testing.T) {
 	}
 	if e.fake.HasCall("status-get") {
 		t.Fatal("a probe without peers is wasted")
+	}
+}
+
+func TestSubnetInterfaceIsPerServer(t *testing.T) {
+	p := setupPair(t)
+	p.fake.Config["subnet4"].([]any)[0].(map[string]any)["interface"] = "eth0"
+	p.peer.Config["subnet4"].([]any)[0].(map[string]any)["interface"] = "br0"
+	if d := p.differences(t); len(d) != 0 {
+		t.Fatalf("the interface counted as a difference: %+v", d)
+	}
+	// a real difference is copied, and the peer keeps its interface
+	p.fake.Config["subnet4"].([]any)[0].(map[string]any)["valid-lifetime"] = 600
+	if res, err := p.mgr.SyncServer(context.Background(), "alice", "standby"); err != nil || res.Status != StatusOK {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if got := p.peer.Config["subnet4"].([]any)[0].(map[string]any)["interface"]; got != "br0" {
+		t.Errorf("peer interface is %v", got)
+	}
+	// a peer without an interface does not get the one of the primary
+	delete(p.peer.Config["subnet4"].([]any)[0].(map[string]any), "interface")
+	p.fake.Config["subnet4"].([]any)[0].(map[string]any)["valid-lifetime"] = 700
+	later := time.Now().Add(time.Second) // a new backup name
+	p.mgr.now = func() time.Time { return later }
+	if res, err := p.mgr.SyncServer(context.Background(), "alice", "standby"); err != nil || res.Status != StatusOK {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if got, ok := p.peer.Config["subnet4"].([]any)[0].(map[string]any)["interface"]; ok {
+		t.Errorf("peer got interface %v", got)
+	}
+}
+
+func TestSyncReadsLargeSubnetIDs(t *testing.T) {
+	p := setupPair(t)
+	for _, f := range []map[string]any{p.fake.Config, p.peer.Config} {
+		f["subnet4"].([]any)[0].(map[string]any)["id"] = 2000000
+	}
+	p.fake.Config["subnet4"].([]any)[0].(map[string]any)["valid-lifetime"] = 600
+	if res, err := p.mgr.SyncServer(context.Background(), "alice", "standby"); err != nil || res.Status != StatusOK {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if got := p.peer.Config["subnet4"].([]any)[0].(map[string]any)["valid-lifetime"]; fmt.Sprint(got) != "600" {
+		t.Errorf("lifetime %v", got)
 	}
 }

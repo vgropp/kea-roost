@@ -96,6 +96,20 @@ func New(mgr *manager.Manager, auth Auth, basePath string) http.Handler {
 	mux.HandleFunc("GET /api/reservations", s.reservations)
 	mux.HandleFunc("GET /api/subnets", s.subnets)
 	mux.HandleFunc("GET /api/devices", s.devices)
+	mux.HandleFunc("GET /api/dhcp6/leases", s.dhcp6(func(ctx context.Context) (any, error) { return s.mgr.Leases6(ctx) }))
+	mux.HandleFunc("GET /api/dhcp6/reservations", s.dhcp6(func(ctx context.Context) (any, error) { return s.mgr.Reservations6(ctx) }))
+	mux.HandleFunc("POST /api/dhcp6/reservations", s.writer(s.createReservation6))
+	mux.HandleFunc("POST /api/dhcp6/reservations/check", s.writer(s.checkReservation6))
+	mux.HandleFunc("PUT /api/dhcp6/reservations/{subnet}/{type}/{id}", s.writer(s.updateReservation6))
+	mux.HandleFunc("DELETE /api/dhcp6/reservations/{subnet}/{type}/{id}", s.writer(s.deleteReservation6))
+	mux.HandleFunc("GET /api/dhcp6/subnets", s.dhcp6(func(ctx context.Context) (any, error) { return s.mgr.Subnets6(ctx) }))
+	mux.HandleFunc("DELETE /api/dhcp6/leases/{ip}", s.writer(s.deleteLease6))
+	mux.HandleFunc("GET /api/dhcp6/clients/{ip}", s.client6)
+	mux.HandleFunc("POST /api/dhcp6/subnets/{subnet}/check", s.writer(s.checkSubnet6))
+	mux.HandleFunc("PUT /api/dhcp6/subnets/{subnet}", s.writer(s.updateSubnet6))
+	mux.HandleFunc("GET /api/dhcp6/servers", s.dhcp6(func(ctx context.Context) (any, error) { return s.mgr.Servers6(ctx) }))
+	mux.HandleFunc("POST /api/dhcp6/servers/{name}/ha/{action}", s.writer(s.haAction6))
+	mux.HandleFunc("POST /api/dhcp6/servers/{name}/sync", s.writer(s.syncServer6))
 	mux.HandleFunc("DELETE /api/leases/{ip}", s.writer(s.deleteLease))
 	mux.HandleFunc("POST /api/reservations", s.writer(s.createReservation))
 	mux.HandleFunc("POST /api/reservations/check", s.writer(s.checkReservation))
@@ -284,6 +298,7 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 		"writable":   currentRole(r) == auth_.RoleAdmin,
 		"role":       currentRole(r),
 		"devices":    s.mgr.DevicesEnabled(),
+		"dhcp6":      s.mgr.HasDHCP6(),
 		"version":    s.mgr.Version(),
 		"user":       user(r),
 	})
@@ -320,6 +335,88 @@ func (s *server) subnets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// dhcp6 serves a read of kea-dhcp6, or 404 when none is configured.
+func (s *server) dhcp6(read func(context.Context) (any, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.mgr.HasDHCP6() {
+			writeJSON(w, http.StatusNotFound, errorBody{Error: "no DHCPv6 server configured, see KEA6_URL"})
+			return
+		}
+		list, err := read(r.Context())
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, list)
+	}
+}
+
+func readInput6(w http.ResponseWriter, r *http.Request) (*manager.Reservation6Input, bool) {
+	var in manager.Reservation6Input
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodySize)).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "cannot read request"})
+		return nil, false
+	}
+	return &in, true
+}
+
+func (s *server) checkReservation6(w http.ResponseWriter, r *http.Request) {
+	in, ok := readInput6(w, r)
+	if !ok {
+		return
+	}
+	check, err := s.mgr.CheckReservation6(r.Context(), *in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, check)
+}
+
+func (s *server) createReservation6(w http.ResponseWriter, r *http.Request) {
+	in, ok := readInput6(w, r)
+	if !ok {
+		return
+	}
+	res, err := s.mgr.CreateReservation6(r.Context(), user(r), *in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeResult(w, res)
+}
+
+func (s *server) updateReservation6(w http.ResponseWriter, r *http.Request) {
+	in, ok := readInput6(w, r)
+	if !ok {
+		return
+	}
+	subnet, ok := subnetParam(w, r)
+	if !ok {
+		return
+	}
+	in.SubnetID, in.IdentifierType, in.Identifier = subnet, r.PathValue("type"), r.PathValue("id")
+	res, err := s.mgr.UpdateReservation6(r.Context(), user(r), *in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeResult(w, res)
+}
+
+func (s *server) deleteReservation6(w http.ResponseWriter, r *http.Request) {
+	subnet, ok := subnetParam(w, r)
+	if !ok {
+		return
+	}
+	res, err := s.mgr.DeleteReservation6(r.Context(), user(r), subnet, r.PathValue("type"), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeResult(w, res)
+}
+
 func (s *server) devices(w http.ResponseWriter, r *http.Request) {
 	list, err := s.mgr.Devices(r.Context())
 	if err != nil {
@@ -331,6 +428,15 @@ func (s *server) devices(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) deleteLease(w http.ResponseWriter, r *http.Request) {
 	if err := s.mgr.DeleteLease(r.Context(), user(r), r.PathValue("ip")); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteLease6 takes ?type=prefix for a delegated prefix.
+func (s *server) deleteLease6(w http.ResponseWriter, r *http.Request) {
+	if err := s.mgr.DeleteLease6(r.Context(), user(r), r.PathValue("ip"), r.URL.Query().Get("type") == "prefix"); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -438,6 +544,45 @@ func readSubnet(w http.ResponseWriter, r *http.Request) (int64, *manager.SubnetI
 		return 0, nil, false
 	}
 	return id, &in, true
+}
+
+func readSubnet6(w http.ResponseWriter, r *http.Request) (int64, *manager.Subnet6Input, bool) {
+	id, ok := subnetParam(w, r)
+	if !ok {
+		return 0, nil, false
+	}
+	var in manager.Subnet6Input
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodySize)).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "cannot read request"})
+		return 0, nil, false
+	}
+	return id, &in, true
+}
+
+func (s *server) checkSubnet6(w http.ResponseWriter, r *http.Request) {
+	id, in, ok := readSubnet6(w, r)
+	if !ok {
+		return
+	}
+	warnings, err := s.mgr.CheckSubnet6(r.Context(), id, *in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"warnings": warnings})
+}
+
+func (s *server) updateSubnet6(w http.ResponseWriter, r *http.Request) {
+	id, in, ok := readSubnet6(w, r)
+	if !ok {
+		return
+	}
+	res, err := s.mgr.UpdateSubnet6(r.Context(), user(r), id, *in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeResult(w, res)
 }
 
 func (s *server) subnetMap(w http.ResponseWriter, r *http.Request) {
@@ -550,6 +695,24 @@ func (s *server) haAction(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, res)
 }
 
+func (s *server) haAction6(w http.ResponseWriter, r *http.Request) {
+	res, err := s.mgr.RunHA6(r.Context(), user(r), r.PathValue("name"), r.PathValue("action"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeResult(w, res)
+}
+
+func (s *server) syncServer6(w http.ResponseWriter, r *http.Request) {
+	res, err := s.mgr.SyncServer6(r.Context(), user(r), r.PathValue("name"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeResult(w, res)
+}
+
 func (s *server) settings(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.mgr.SettingFields())
 }
@@ -595,11 +758,28 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.mgr.Health(r.Context()))
 }
 
+func (s *server) client6(w http.ResponseWriter, r *http.Request) {
+	client, err := s.mgr.Client6(r.Context(), r.PathValue("ip"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	// the history comes from the audit log, which only admins see
+	if currentRole(r) != auth_.RoleAdmin {
+		client.History = []manager.AuditEntry{}
+	}
+	writeJSON(w, http.StatusOK, client)
+}
+
 func (s *server) client(w http.ResponseWriter, r *http.Request) {
 	client, err := s.mgr.Client(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
+	}
+	// the history comes from the audit log, which only admins see
+	if currentRole(r) != auth_.RoleAdmin {
+		client.History = []manager.AuditEntry{}
 	}
 	writeJSON(w, http.StatusOK, client)
 }

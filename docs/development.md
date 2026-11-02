@@ -30,6 +30,13 @@ installed:
 
     go test -tags kea ./internal/manager
 
+The interface is plain JavaScript without a build step: the browser gets
+`internal/web/static` as it is. ESLint and a TypeScript check of that JavaScript need
+Node.js; the types for the check are in `internal/web/types` and are not served:
+
+    npm ci
+    npm run lint
+
 The screenshots above are written by a test from invented data:
 
     SCREENSHOT_DIR=docs/screenshots go test -tags e2e -run TestScreenshots ./internal/web

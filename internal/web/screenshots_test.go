@@ -27,7 +27,7 @@ func showcase(b *browser) {
 		{"192.0.2.13", "dc:a6:32:aa:01:13", "camera-door", "", true, true},
 		{"192.0.2.14", "00:17:88:aa:01:14", "light-bridge", "direct-dns", true, false},
 		{"192.0.2.15", "ac:de:48:aa:01:15", "tv-livingroom", "", true, true},
-		{"192.0.2.100", "7e:90:27:aa:01:64", "phone", "", false, true},
+		{"192.0.2.100", "06:3c:5e:aa:01:64", "phone", "", false, true},
 		{"192.0.2.101", "3c:22:fb:aa:01:65", "laptop", "", false, true},
 		{"192.0.2.102", "18:fe:34:aa:01:66", "plug-office", "", false, true},
 		{"192.0.2.103", "5c:cf:7f:aa:01:67", "sensor-garden", "", false, true},
@@ -110,6 +110,7 @@ func TestScreenshots(t *testing.T) {
 	b.open("devices", "Devices")
 	shot("devices")
 	b.open("reservations", "Reservations")
+	b.poll(`[...document.querySelectorAll('button')].some(x => x.textContent === 'New reservation' && !x.disabled)`)
 	b.exec(`[...document.querySelectorAll('button')].find(b => b.textContent === 'New reservation').click()`)
 	b.poll(`document.querySelector('dialog form') !== null`)
 	b.exec(`const a = [...document.querySelectorAll('dialog label')].find(l => l.firstChild.textContent === 'IP address').querySelector('input');
@@ -123,9 +124,20 @@ func TestScreenshots(t *testing.T) {
 	shot("leases")
 	b.open("reservations", "Reservations")
 	shot("reservations")
+	// IPv6 of the printer, linked to its IPv4 reservation by MAC
+	b.fake6.Lock()
+	b.fake6.Leases6[0]["hw-address"] = "00:0c:29:aa:01:12"
+	b.fake6.Unlock()
+	b.do(chromedp.Navigate(b.url + "/#/leases?v=6"))
+	b.poll(`document.querySelectorAll('tbody tr').length === 2 && document.body.innerText.includes('192.0.2.12')`)
+	shot("leases-ipv6")
 	b.open("subnets", "Subnets")
 	b.poll(`document.querySelector('.addr-grid') !== null`)
 	shot("subnets")
+	b.do(chromedp.Navigate(b.url + "/#/subnets?v=6"))
+	b.poll(`document.querySelector('.map6 .addr-grid') !== null`)
+	b.exec(`document.querySelector('.map6 .addr-grid button').click()`)
+	shot("subnets-ipv6")
 	b.do(chromedp.Navigate(b.url + "/#/health"))
 	b.poll(`document.querySelector('.health-summary') !== null`)
 	shot("health")
@@ -135,7 +147,7 @@ func TestScreenshots(t *testing.T) {
 	shot("client")
 	b.exec(`document.querySelector('dialog .dialog-close').click()`)
 	b.do(chromedp.Navigate(b.url + "/#/servers"))
-	b.poll(`document.querySelectorAll('.server-card').length === 2 && document.querySelector('.ha-link') !== null`)
+	b.poll(`document.querySelectorAll('.server-card').length === 4 && document.querySelectorAll('.ha-link').length === 2 && document.body.innerText.includes('1 difference')`)
 	shot("servers")
 	b.do(chromedp.Navigate(b.url + "/#/settings"))
 	b.poll(`document.querySelector('input[name="reviewDays"]') !== null`)

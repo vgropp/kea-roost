@@ -121,3 +121,26 @@ func TestTrustedProxies(t *testing.T) {
 		t.Fatal("a name was accepted")
 	}
 }
+
+func TestKea6URL(t *testing.T) {
+	c, err := Load(env(map[string]string{"KEA_URL": "http://kea", "KEA6_URL": "http://192.0.2.1:8052"}))
+	if err != nil || c.Kea6URL != "http://192.0.2.1:8052" {
+		t.Fatalf("%q %v", c.Kea6URL, err)
+	}
+	if _, err := Load(env(map[string]string{"KEA_URL": "http://kea", "KEA6_URL": "kea6"})); err == nil {
+		t.Fatal("a URL without scheme was accepted")
+	}
+}
+
+func TestPeers6(t *testing.T) {
+	c, err := Load(env(map[string]string{"KEA_URL": "http://kea", "KEA6_URL": "http://192.0.2.1:8052", "KEA6_PEERS": "standby=http://192.0.2.2:8052"}))
+	if err != nil || len(c.Peers6) != 1 || c.Peers6[0] != (Peer{"standby", "http://192.0.2.2:8052"}) {
+		t.Fatalf("%+v %v", c.Peers6, err)
+	}
+	if _, err := Load(env(map[string]string{"KEA_URL": "http://kea", "KEA6_PEERS": "standby=http://192.0.2.2:8052"})); err == nil {
+		t.Fatal("peers without KEA6_URL were accepted")
+	}
+	if _, err := Load(env(map[string]string{"KEA_URL": "http://kea", "KEA6_URL": "http://192.0.2.1:8052", "KEA6_PEERS": "kea=http://192.0.2.2:8052"})); err == nil {
+		t.Fatal("the name of the primary was accepted")
+	}
+}

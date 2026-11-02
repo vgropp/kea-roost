@@ -502,3 +502,20 @@ func TestPasswordResetEndsWaitingLogins(t *testing.T) {
 		t.Fatalf("the old password still logs in: %d", res.StatusCode)
 	}
 }
+
+// The history of a client comes from the audit log, which viewers do not see.
+func TestClientHistoryOnlyForAdmins(t *testing.T) {
+	_, srv := setup(t, login)
+	admin, viewer := browserClient(t), browserClient(t)
+	call(t, admin, srv, "POST", "/api/login", loginBody("admin", adminPassword))
+	call(t, viewer, srv, "POST", "/api/login", loginBody("viewer", viewerPassword))
+	if res, _ := call(t, admin, srv, "POST", "/api/reservations", payload); res.StatusCode != http.StatusOK {
+		t.Fatalf("create: %d", res.StatusCode)
+	}
+	if _, body := call(t, admin, srv, "GET", "/api/clients/192.0.2.10", ""); !strings.Contains(body, `"action":"reservation-add"`) {
+		t.Errorf("admin: %s", body)
+	}
+	if res, body := call(t, viewer, srv, "GET", "/api/clients/192.0.2.10", ""); res.StatusCode != http.StatusOK || !strings.Contains(body, `"history":[]`) {
+		t.Errorf("viewer: %d %s", res.StatusCode, body)
+	}
+}

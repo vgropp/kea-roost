@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -124,4 +125,39 @@ func TestLabelValuesAreEscaped(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 	checkFormat(t, got)
+}
+
+func TestMetricsOfDHCP6(t *testing.T) {
+	e, fake6, _ := setupPair6(t)
+	fake6.Lock()
+	fake6.Stats = map[string]any{
+		"pkt6-solicit-received":                 [][]any{{12, "2026-10-30 12:00:00.000000"}},
+		"pkt6-reply-sent":                       [][]any{{11, "2026-10-30 12:00:00.000000"}},
+		"subnet[1].total-nas":                   [][]any{{json.Number("18446744073709551616"), "2026-10-30 12:00:00.000000"}},
+		"subnet[1].assigned-nas":                [][]any{{2, "2026-10-30 12:00:00.000000"}},
+		"subnet[1].pool[0].assigned-nas":        [][]any{{2, "2026-10-30 12:00:00.000000"}},
+		"subnet[1].v6-allocation-fail-no-pools": [][]any{{1, "2026-10-30 12:00:00.000000"}},
+		"subnet[1].pd-pool[0].assigned-pds":     [][]any{{1, "2026-10-30 12:00:00.000000"}},
+	}
+	fake6.Unlock()
+	text := string(e.mgr.Metrics(context.Background()))
+	checkFormat(t, text)
+	for _, want := range []string{
+		`kea_dhcp6_packets_received_total{server="primary",operation="solicit"} 12`,
+		`kea_dhcp6_packets_sent_total{server="primary",operation="reply"} 11`,
+		`kea_dhcp6_na_total{server="primary",subnet="fd00:db8:1::/64",subnet_id="1",prefix="fd00:db8:1::/64",shared_network="",pool=""} 18446744073709552000`, // 2^64 as a float
+		`kea_dhcp6_na_assigned_total{server="primary",subnet="fd00:db8:1::/64",subnet_id="1",prefix="fd00:db8:1::/64",shared_network="",pool="fd00:db8:1::1000 - fd00:db8:1::ffff"} 2`,
+		`kea_dhcp6_allocations_failed_total{server="primary",subnet="fd00:db8:1::/64",subnet_id="1",context="no-pools"} 1`,
+		`roost_dhcp6_server_up{server="standby"} 1`,
+		`roost_dhcp6_leases_active 2`,
+		`roost_dhcp6_reservations 1`,
+		`roost_dhcp6_config_differences{server="standby"} 0`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if strings.Contains(text, "pd-pool") {
+		t.Error("prefix pool statistics leaked into a metric")
+	}
 }

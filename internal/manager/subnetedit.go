@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"slices"
 	"strings"
@@ -13,6 +14,9 @@ import (
 
 // Warnings list only a few addresses; the count tells the rest.
 const maxListedAddresses = 8
+
+// maxLifetime is the largest lifetime Kea stores, a 32 bit count of seconds.
+const maxLifetime = math.MaxUint32
 
 // SubnetInput is the editable part of a subnet.
 type SubnetInput struct {
@@ -89,10 +93,6 @@ func (m *Manager) checkSubnet(ctx context.Context, id int64, in *SubnetInput) (*
 	if subnet.SharedNetwork != "" {
 		problems = append(problems, fmt.Sprintf("subnet belongs to the shared network %s, which cannot be edited here", subnet.SharedNetwork))
 	}
-	// reservations cannot be part of subnet4-update, so it could drop them
-	if n := len(slices.DeleteFunc(slices.Clone(hosts), func(h kea.Host) bool { return h.SubnetID() != id })); n > 0 {
-		problems = append(problems, fmt.Sprintf("subnet has %d reservations of its own, which cannot be kept by this change", n))
-	}
 	for _, g := range in.Gateways {
 		if ip, err := netip.ParseAddr(g); err != nil || !ip.Is4() || !subnet.Prefix.Contains(ip) {
 			problems = append(problems, fmt.Sprintf("gateway %q is no address inside %s", g, subnet.Subnet))
@@ -103,8 +103,8 @@ func (m *Manager) checkSubnet(ctx context.Context, id int64, in *SubnetInput) (*
 			problems = append(problems, fmt.Sprintf("invalid DNS server %q", d))
 		}
 	}
-	if in.ValidLifetime <= 0 {
-		problems = append(problems, "lease lifetime must be positive")
+	if in.ValidLifetime <= 0 || in.ValidLifetime > maxLifetime {
+		problems = append(problems, fmt.Sprintf("lease lifetime must be between 1 and %d seconds", int64(maxLifetime)))
 	}
 	if len(problems) > 0 {
 		return nil, nil, nil, &ValidationError{Problems: problems}
@@ -208,13 +208,7 @@ func applySubnet(raw map[string]any, subnet *kea.Subnet, pools []kea.Pool, in *S
 		setSubnetOption(raw, "domain-name-servers", in.DNSServers)
 	}
 	if subnet.ValidLifetime == nil || *subnet.ValidLifetime != in.ValidLifetime {
-		raw["valid-lifetime"] = in.ValidLifetime
-		// Kea reports the bounds as well; a lifetime outside of them would not apply
-		for _, bound := range []string{"min-valid-lifetime", "max-valid-lifetime"} {
-			if _, ok := raw[bound]; ok {
-				raw[bound] = in.ValidLifetime
-			}
-		}
+		setLifetime(raw, "valid-lifetime", in.ValidLifetime)
 	}
 
 	prepareSubnetUpdate(raw)

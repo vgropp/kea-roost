@@ -54,6 +54,8 @@ type Finding struct {
 	Query string `json:"query,omitempty"`
 	// Hidden marks a finding the operator accepted.
 	Hidden bool `json:"hidden,omitempty"`
+	// IPv6 marks a finding in the configuration of kea-dhcp6.
+	IPv6 bool `json:"ipv6,omitempty"`
 }
 
 // ReviewRule is one check of the review and what came of it.
@@ -65,6 +67,7 @@ type ReviewRule struct {
 	// Skipped says why its source of data is not available, if so.
 	Skipped string `json:"skipped,omitempty"`
 	network bool
+	v6      bool
 }
 
 // HealthReport is the answer of Health.
@@ -178,33 +181,7 @@ func (m *Manager) serverChecks(ctx context.Context, s server) ([]HealthCheck, *P
 		add(SeverityOK, "DHCP sockets", "ready")
 	}
 
-	standby := false
-	for _, rel := range status.HA {
-		local := rel.Servers.Local
-		standby = local.Role == "standby" && local.State == "hot-standby"
-		add(HAStateSeverity(local.State), "HA state", "%s as %s", local.State, local.Role)
-		if r := rel.Servers.Remote; r != nil {
-			switch {
-			case r.CommunicationInterrupted:
-				add(SeverityCrit, "HA partner", "communication with %s is interrupted", r.ServerName)
-			case !r.InTouch:
-				add(SeverityCrit, "HA partner", "%s has never answered", r.ServerName)
-			default:
-				add(SeverityOK, "HA partner", "%s is %s", r.ServerName, r.LastState)
-			}
-			if r.ClockSkew != nil {
-				severity := SeverityOK
-				if skewed(*r.ClockSkew, m.cfg().ClockSkewSeconds) {
-					severity = SeverityWarn
-				}
-				add(severity, "Clock", "%d s from %s", *r.ClockSkew, r.ServerName)
-			}
-		}
-		if hb, err := s.client.HAHeartbeat(ctx, local.ServerName); err == nil && hb.UnsentUpdates > 0 {
-			// the counter only tells the past: it keeps its value after the partner returns
-			add(SeverityInfo, "Lease updates", "%d were held back while the partner was away", hb.UnsentUpdates)
-		}
-	}
+	standby := m.haChecks(ctx, s.client, status, add)
 
 	if commands, err := s.client.Commands(ctx); err != nil {
 		add(SeverityWarn, "Hooks", "%v", err)
@@ -238,6 +215,90 @@ func (m *Manager) serverChecks(ctx context.Context, s server) ([]HealthCheck, *P
 	return checks, traffic, version
 }
 
+// haChecks adds the HA state of a server and its view of the partner. It reports
+// whether the server is a standby that does not serve.
+func (m *Manager) haChecks(ctx context.Context, client *kea.Client, status *kea.Status, add func(Severity, string, string, ...any)) bool {
+	standby := false
+	for _, rel := range status.HA {
+		local := rel.Servers.Local
+		standby = local.Role == "standby" && local.State == "hot-standby"
+		add(HAStateSeverity(local.State), "HA state", "%s as %s", local.State, local.Role)
+		if r := rel.Servers.Remote; r != nil {
+			switch {
+			case r.CommunicationInterrupted:
+				add(SeverityCrit, "HA partner", "communication with %s is interrupted", r.ServerName)
+			case !r.InTouch:
+				add(SeverityCrit, "HA partner", "%s has never answered", r.ServerName)
+			default:
+				add(SeverityOK, "HA partner", "%s is %s", r.ServerName, r.LastState)
+			}
+			if r.ClockSkew != nil {
+				severity := SeverityOK
+				if skewed(*r.ClockSkew, m.cfg().ClockSkewSeconds) {
+					severity = SeverityWarn
+				}
+				add(severity, "Clock", "%d s from %s", *r.ClockSkew, r.ServerName)
+			}
+		}
+		if hb, err := client.HAHeartbeat(ctx, local.ServerName); err == nil && hb.UnsentUpdates > 0 {
+			// the counter only tells the past: it keeps its value after the partner returns
+			add(SeverityInfo, "Lease updates", "%d were held back while the partner was away", hb.UnsentUpdates)
+		}
+	}
+	return standby
+}
+
+// dhcp6Checks covers one kea-dhcp6, which only Kea Roost reads, so there are fewer
+// checks.
+func (m *Manager) dhcp6Checks(ctx context.Context, s server) []HealthCheck {
+	ctx, cancel := context.WithTimeout(ctx, serverCheckTimeout)
+	defer cancel()
+	server := "DHCPv6"
+	if len(m.peers6) > 0 {
+		server = label(s.name, true)
+	}
+	checks := []HealthCheck{}
+	add := func(severity Severity, name, format string, args ...any) {
+		checks = append(checks, HealthCheck{name, server, severity, fmt.Sprintf(format, args...)})
+	}
+	status, err := s.client.Status(ctx)
+	if err != nil {
+		add(SeverityCrit, "Reachable", "%v", err)
+		return checks
+	}
+	version, _ := s.client.Version(ctx)
+	add(SeverityOK, "Reachable", "Kea %s, up for %s", version, readableSeconds(status.Uptime))
+	if status.Sockets.Status != "" && status.Sockets.Status != "ready" {
+		add(SeverityCrit, "DHCP sockets", "%s", status.Sockets.Status)
+	} else {
+		add(SeverityOK, "DHCP sockets", "ready")
+	}
+	m.haChecks(ctx, s.client, status, add)
+	commands, err := s.client.Commands(ctx)
+	if err != nil {
+		add(SeverityWarn, "Hooks", "%v", err)
+		return checks
+	}
+	missing := false
+	for _, h := range []struct {
+		command, name, loss string
+		severity            Severity
+	}{
+		{"lease6-get-all", "libdhcp_lease_cmds", "no IPv6 leases", SeverityWarn},
+		{"reservation-get-all", "libdhcp_host_cmds", "no IPv6 reservations", SeverityWarn},
+		{"subnet6-update", "libdhcp_subnet_cmds", "IPv6 subnets cannot be edited", SeverityInfo},
+	} {
+		if !slices.Contains(commands, h.command) {
+			missing = true
+			add(h.severity, "Hooks", "%s is not loaded: %s", h.name, h.loss)
+		}
+	}
+	if !missing {
+		add(SeverityOK, "Hooks", "all hooks loaded")
+	}
+	return checks
+}
+
 // Health runs all checks. It only reads.
 func (m *Manager) Health(ctx context.Context) *HealthReport {
 	r := &HealthReport{Checks: []HealthCheck{}, Traffic: []PacketStats{}, Findings: []Finding{}, Rules: []ReviewRule{}}
@@ -251,6 +312,9 @@ func (m *Manager) Health(ctx context.Context) *HealthReport {
 		if version != "" {
 			versions[s.name] = version
 		}
+	}
+	for _, s := range m.serversOf(true) {
+		r.Checks = append(r.Checks, m.dhcp6Checks(ctx, s)...)
 	}
 	if len(versions) > 1 {
 		lines := map[string]bool{}
@@ -334,10 +398,18 @@ func (m *Manager) review(ctx context.Context, r *HealthReport, network networkDa
 	r.Findings = reviewConfig(config, subnets, hosts)
 	found, skipped := m.networkFindings(ctx, subnets, hosts, network)
 	r.Findings = append(r.Findings, found...)
+	skipped6 := ""
+	if m.kea6 != nil {
+		found6, err := m.review6(ctx)
+		if err != nil {
+			skipped6 = "kea-dhcp6 did not answer: " + err.Error()
+		}
+		r.Findings = append(r.Findings, found6...)
+	}
 	linkFindings(r.Findings)
 	m.markHidden(r.Findings)
 	sortFindings(r.Findings)
-	r.Rules = reviewSummary(r.Findings, skipped)
+	r.Rules = reviewSummary(r.Findings, skipped, m.kea6 != nil, skipped6)
 	return nil
 }
 
@@ -443,7 +515,7 @@ func reviewConfig(config json.RawMessage, subnets []kea.Subnet, hosts []kea.Host
 		case !s.Prefix.Contains(ip):
 			add("reservation-wrong-subnet", SeverityCrit, "Reservation", label, "%s is outside of its subnet %s", ip, s.Subnet)
 		case s.PoolContaining(ip) != nil:
-			add("reservation-in-pool", SeverityInfo, "Reservation", label, "%s lies inside the dynamic pool, so another client may hold it first", ip)
+			add("reservation-in-pool", SeverityInfo, "Reservation", label, "%s lies inside the dynamic pool %s, so another client may hold it first; outside of the pool it stays free", ip, s.PoolContaining(ip).Text)
 		}
 		if s != nil {
 			inherited := map[string]string{}

@@ -48,7 +48,7 @@ func TestUpdateSubnetChangesOnlyEditedFields(t *testing.T) {
 	got, _ := json.Marshal(e.rawSubnet())
 	text := string(got)
 	for _, want := range []string{`"192.0.2.210-192.0.2.220"`, `"client-class":"guests"`, `"data":"192.0.2.254"`, `"subnet-mask"`,
-		`"next-server":"192.0.2.5"`, `"valid-lifetime":3600`, `"min-valid-lifetime":3600`, `"max-valid-lifetime":3600`} {
+		`"next-server":"192.0.2.5"`, `"valid-lifetime":3600`, `"min-valid-lifetime":3600`, `"max-valid-lifetime":4000`} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %s in %s", want, text)
 		}
@@ -114,13 +114,14 @@ func TestUnknownSubnet(t *testing.T) {
 	}
 }
 
-func TestSubnetWithOwnReservationsIsRefused(t *testing.T) {
+// Kea keeps the reservations of a subnet on subnet4-update; this was checked with
+// Kea 3.0, and the kea tag tests it against the real server.
+func TestSubnetWithOwnReservationsCanBeEdited(t *testing.T) {
 	e := setup(t)
 	e.fake.Hosts = []map[string]any{{"subnet-id": 1, "hw-address": "aa:bb:cc:00:00:01", "ip-address": "192.0.2.10"}}
-	_, err := e.mgr.UpdateSubnet(context.Background(), "u", 1, subnetInput())
-	var v *ValidationError
-	if !errors.As(err, &v) || !strings.Contains(v.Error(), "reservations") {
-		t.Fatalf("got %v", err)
+	res, err := e.mgr.UpdateSubnet(context.Background(), "u", 1, subnetInput())
+	if err != nil || res.Status != StatusOK || len(e.fake.Hosts) != 1 {
+		t.Fatalf("%+v %v", res, err)
 	}
 }
 

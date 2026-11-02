@@ -42,12 +42,19 @@ var reviewRules = []ReviewRule{
 }
 
 // reviewSummary counts the findings per rule. skipped tells why the rules that
-// compare with the network did not run, so that they do not look fine.
-func reviewSummary(findings []Finding, skipped string) []ReviewRule {
+// compare with the network did not run, and skipped6 why the IPv6 rules did not,
+// so that they do not look fine. The IPv6 rules only show with kea-dhcp6.
+func reviewSummary(findings []Finding, skipped string, v6 bool, skipped6 string) []ReviewRule {
 	out := slices.Clone(reviewRules)
+	if v6 {
+		out = append(out, reviewRules6...)
+	}
 	for i := range out {
 		if out[i].network {
 			out[i].Skipped = skipped
+		}
+		if out[i].v6 {
+			out[i].Skipped = skipped6
 		}
 		for _, f := range findings {
 			switch {

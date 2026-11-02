@@ -1,0 +1,15 @@
+{
+  // Type checks of the frontend only: nothing is compiled, the browser gets the files as they are.
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "target": "es2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "strict": false,
+    "skipLibCheck": true
+  },
+  "include": ["internal/web/static/*.js", "internal/web/types/*.d.ts"]
+}

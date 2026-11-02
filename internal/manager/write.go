@@ -88,7 +88,7 @@ type ReservationInput struct {
 var (
 	macPattern        = regexp.MustCompile(`^[0-9a-fA-F]{2}([:-][0-9a-fA-F]{2}){5}$`)
 	identifierPattern = regexp.MustCompile(`^([0-9a-fA-F]{2}([:-]?[0-9a-fA-F]{2})*|'[^']+')$`)
-	nonBackupName     = regexp.MustCompile(`[^a-z-]`)
+	nonBackupName     = regexp.MustCompile(`[^a-z0-9-]`)
 	hostnamePattern   = regexp.MustCompile(`^[a-zA-Z0-9_]([a-zA-Z0-9_-]*[a-zA-Z0-9_])?(\.[a-zA-Z0-9_]([a-zA-Z0-9_-]*[a-zA-Z0-9_])?)*\.?$`)
 )
 
@@ -328,8 +328,9 @@ func (m *Manager) runOn(ctx context.Context, servers []server, c change) *Result
 
 // applyOn runs a change on one server and adds its steps to res.
 func (m *Manager) applyOn(ctx context.Context, s server, c change, res *Result) (Status, string) {
+	v6 := m.isV6(s)
 	step := func(name string, err error) bool {
-		if len(m.peers) > 0 {
+		if v6 && len(m.peers6) > 0 || !v6 && len(m.peers) > 0 {
 			name = s.name + ": " + name
 		}
 		st := Step{Name: name, OK: err == nil}
@@ -384,13 +385,16 @@ func (m *Manager) applyOn(ctx context.Context, s server, c change, res *Result) 
 }
 
 // backupReason tells the backups of the servers apart. Backup names only hold
-// lowercase letters and dashes.
+// lowercase letters, digits and dashes.
 func (m *Manager) backupReason(c change, s server) string {
-	if s.client == m.kea {
-		return c.backupReason
+	reason := c.backupReason
+	if m.isV6(s) {
+		reason += "-dhcpv6"
 	}
-	name := nonBackupName.ReplaceAllString(strings.ToLower(s.name), "-")
-	return c.backupReason + "-" + name
+	if s.client == m.kea || s.client == m.kea6 {
+		return reason
+	}
+	return reason + "-" + nonBackupName.ReplaceAllString(strings.ToLower(s.name), "-")
 }
 
 func (m *Manager) finish(c change, res *Result) *Result {
@@ -767,11 +771,37 @@ func (m *Manager) DeleteLease(ctx context.Context, user, ip string) error {
 	if addr, err := netip.ParseAddr(ip); err != nil || !addr.Is4() {
 		return &ValidationError{Problems: []string{fmt.Sprintf("invalid IPv4 address %q", ip)}}
 	}
+	return m.deleteLease(ctx, user, m.servers(), "lease4-del", ip, func(ctx context.Context, k *kea.Client) (bool, error) {
+		return k.DeleteLease(ctx, ip)
+	})
+}
+
+// DeleteLease6 removes an IPv6 lease, or with prefix a delegated prefix, from every
+// kea-dhcp6.
+func (m *Manager) DeleteLease6(ctx context.Context, user, ip string, prefix bool) error {
+	if m.kea6 == nil {
+		return ErrNotFound
+	}
+	addr, err := netip.ParseAddr(ip)
+	if err != nil || !addr.Is6() || addr.Is4In6() || addr.Zone() != "" {
+		return &ValidationError{Problems: []string{fmt.Sprintf("invalid IPv6 address %q", ip)}}
+	}
+	ip = addr.String()
+	target := ip
+	if prefix {
+		target += " (prefix)"
+	}
+	return m.deleteLease(ctx, user, m.servers6(), "lease6-del", target, func(ctx context.Context, k *kea.Client) (bool, error) {
+		return k.DeleteLease6(ctx, ip, prefix)
+	})
+}
+
+func (m *Manager) deleteLease(ctx context.Context, user string, servers []server, action, target string, del func(context.Context, *kea.Client) (bool, error)) error {
 	ctx, cancel := detached(ctx)
 	defer cancel()
 	m.writeMu.Lock()
 	defer m.writeMu.Unlock()
-	found, err := m.kea.DeleteLease(ctx, ip)
+	found, err := del(ctx, servers[0].client)
 	status := StatusOK
 	var unreachable *kea.UnreachableError
 	switch {
@@ -782,15 +812,16 @@ func (m *Manager) DeleteLease(ctx context.Context, user, ip string) error {
 	}
 	if err == nil && found {
 		// the partner may not know this lease, which is fine
-		for _, p := range m.peers {
-			if _, peerErr := p.client.DeleteLease(ctx, ip); peerErr != nil {
+		for _, p := range servers[1:] {
+			if _, peerErr := del(ctx, p.client); peerErr != nil {
 				status = StatusPartial
-				err = fmt.Errorf("deleted on %s, but not on %s: %w", m.serverName, p.name, peerErr)
+				v6 := m.isV6(p)
+				err = fmt.Errorf("deleted on %s, but not on %s: %w", label(servers[0].name, v6), label(p.name, v6), peerErr)
 				break
 			}
 		}
 	}
-	auditErr := m.store.Audit(AuditEntry{Time: m.now(), User: user, Action: "lease4-del", Target: ip, Status: status})
+	auditErr := m.store.Audit(AuditEntry{Time: m.now(), User: user, Action: action, Target: target, Status: status})
 	if auditErr != nil {
 		slog.Error("audit log", "error", auditErr)
 	}
@@ -812,11 +843,12 @@ func (m *Manager) Persist(ctx context.Context, user string) *Result {
 	defer m.writeMu.Unlock()
 
 	res := &Result{Status: StatusOK, Message: "Configuration saved.", Warnings: []string{}, Steps: []Step{}}
-	for _, srv := range m.servers() {
+	several := len(m.peers) > 0 || m.kea6 != nil
+	for _, srv := range append(m.servers(), m.serversOf(true)...) {
 		err := srv.client.ConfigWrite(ctx)
 		name := "Persist (config-write)"
-		if len(m.peers) > 0 {
-			name = srv.name + ": " + name
+		if several {
+			name = label(srv.name, m.isV6(srv)) + ": " + name
 		}
 		s := Step{Name: name, OK: err == nil}
 		if err != nil {

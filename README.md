@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Kea Roost is a lightweight, self-hosted web interface and dashboard for the
-[ISC Kea](https://www.isc.org/kea/) DHCPv4 server. Manage DHCP leases and reservations,
+[ISC Kea](https://www.isc.org/kea/) DHCP server. Manage DHCP leases and reservations,
 client classes, subnets and pools in the browser, keep an HA pair in step and operate
 it, find out why a client gets its address, and see which devices on the network have
 no reservation yet.
@@ -13,7 +13,7 @@ It is a single Go binary with the frontend embedded, runs in Docker, and needs n
 database or agents. It talks to Kea exclusively through the Kea management API and
 takes no part in DHCP operation: if it stops, Kea keeps serving.
 
-Tested with Kea 3.0.3 and 3.0.4, on its own or as a hot-standby HA pair.
+Tested with Kea 3.0.3 and 3.0.4, DHCPv4 and DHCPv6, on its own or as a hot-standby HA pair.
 Kea Roost is an independent project, not affiliated with or endorsed by ISC, and is
 licensed under the [MIT License](LICENSE).
 
@@ -32,15 +32,17 @@ lease into a static DHCP reservation in two clicks.
 - **Client classes and subnets:** edit classes, pools, gateway, DNS servers and lease lifetime.
 - **[Accounts](docs/accounts.md):** several users as admin or viewer, a login form,
   optional 2FA with TOTP, and setup of the first admin.
+- **[IPv6](docs/ipv6.md):** leases, reservations, subnets and prefix delegation of a
+  `kea-dhcp6`, linked to the IPv4 devices by MAC, with diagnostics and metrics.
 - **[Address map](docs/address-map.md):** every address at a glance, and the free ranges.
 - **[Several Kea servers and HA](docs/several-servers.md):** every change reaches all servers,
-  differences show up, and HA can be operated: maintenance, sync, reset.
+  differences show up, and HA can be operated: maintenance, sync, reset. For IPv4 and IPv6.
 - **[Diagnostics](docs/diagnostics.md):** why a client gets its address, health of all servers,
   DHCP traffic, and a review of the configuration against the real network.
 - **[Devices](docs/devices.md):** everything on the network, with
   [arpmonitor](https://github.com/vgropp/arpmonitor) and
   [openwrt-ap-dashboard](https://github.com/vgropp/openwrt-ap-dashboard).
-- **[DNS names](docs/dns-names.md):** a hosts file of all reservations for dnsmasq or CoreDNS.
+- **[DNS names](docs/dns-names.md):** a hosts file of all reservations, IPv4 and IPv6, for dnsmasq or CoreDNS.
 - **[Prometheus metrics](docs/metrics.md):** compatible with the common Kea exporters.
 - **Audit log and backups:** every change with its user and result.
 - **Interface:** Classic and Modern themes in light and dark, usable on a phone, without
@@ -53,6 +55,10 @@ The pictures show invented devices.
 | Dashboard | Address map |
 |---|---|
 | ![Kea Roost dashboard with DHCP server state, HA state, recent leases and pool utilization](docs/screenshots/dashboard.png) | ![Address map of a subnet with reserved, leased and free addresses](docs/screenshots/subnets.png) |
+
+| Leases | Reservations |
+|---|---|
+| ![Table of Kea DHCP leases with search, filters and MAC vendors](docs/screenshots/leases.png) | ![Table of Kea DHCP host reservations with client classes](docs/screenshots/reservations.png) |
 
 | Devices | Client details |
 |---|---|
@@ -93,10 +99,9 @@ The interface is served on port 8080 (`MANAGER_PORT`). Backups and the audit log
 live in the `data` volume. The container runs as an unprivileged user with a
 read-only root filesystem.
 
-The container must be able to reach the Kea control socket. If Kea runs on the
-Docker host, use `host.docker.internal` in `KEA_URL`. `127.0.0.1` would mean the
-container itself. Kea must then listen on an address the container can reach,
-not on `127.0.0.1`. The service runs on Docker's default bridge network because
+The container must reach the Kea control socket. For Kea on the Docker host, use
+`host.docker.internal` in `KEA_URL` and let Kea listen on an address the container can
+reach, not on `127.0.0.1`. The service uses Docker's default bridge network, because
 hosts can block project networks from reaching local services.
 
 ## Documentation
@@ -105,11 +110,12 @@ hosts can block project networks from reaching local services.
 |---|---|
 | [Configuration](docs/configuration.md) | Environment, Settings page, reverse proxy, MAC vendors, themes |
 | [Accounts](docs/accounts.md) | First admin, roles, 2FA, failed logins, lost passwords |
-| [Kea configuration](docs/kea-configuration.md) | What Kea needs: control socket and hooks |
+| [Kea configuration](docs/kea-configuration.md) | What kea-dhcp4 and kea-dhcp6 need: control socket and hooks |
 | [Several servers and HA](docs/several-servers.md) | Peers, comparing, operating HA |
+| [IPv6](docs/ipv6.md) | kea-dhcp6 next to IPv4: setup, pages, linking DUIDs to devices |
 | [Address map](docs/address-map.md) | Free ranges and how they are found |
 | [Diagnostics](docs/diagnostics.md) | Client details, health, configuration review |
-| [Devices](docs/devices.md) | arpmonitor and openwrt-ap-dashboard |
+| [Devices](docs/devices.md) | Devices page, arpmonitor and openwrt-ap-dashboard |
 | [DNS names](docs/dns-names.md) | Hosts file for a DNS server |
 | [Prometheus metrics](docs/metrics.md) | Metrics and their names |
 | [Development](docs/development.md) | Build and test without Docker |

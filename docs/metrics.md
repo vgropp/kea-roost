@@ -38,4 +38,13 @@ Kea Roost adds what only it knows:
 | `roost_wifi_clients`, `roost_ap_dashboard_up` | From the AP dashboard |
 | `roost_dns_hosts_file_ok`, `roost_info` | The hosts file and the version |
 
+With [IPv6](ipv6.md), `kea-dhcp6` is reported under the names of kea-exporter as well:
+`kea_dhcp6_packets_received_total`, `kea_dhcp6_packets_sent_total`, `kea_dhcp6_na_total`,
+`kea_dhcp6_na_assigned_total`, `kea_dhcp6_pd_total`, `kea_dhcp6_pd_assigned_total`,
+`kea_dhcp6_allocations_failed_total` and so on, with the labels of the IPv4 metrics.
+Address counts of IPv6 pools exceed what an integer holds and are reported as floats.
+What Kea Roost adds for `kea-dhcp6` starts with `roost_dhcp6_`: `roost_dhcp6_server_up`,
+`roost_dhcp6_ha_state`, `roost_dhcp6_config_differences`, `roost_dhcp6_leases_active`,
+`roost_dhcp6_reservations` and the others of the table above.
+
 A scrape runs the same queries as the Health page, so an interval of a minute is enough.

@@ -31,6 +31,10 @@ type Server struct {
 	SilentUpdate bool            // reservation-update reports success without doing anything
 	Unknown      map[string]bool // commands answered with result 2
 	User, Pass   string
+	// DHCP6 makes the fake a kea-dhcp6: config-get answers with Dhcp6 and the
+	// leases come from Leases6.
+	DHCP6   bool
+	Leases6 []map[string]any
 }
 
 // Failure makes one command misbehave.
@@ -84,6 +88,39 @@ func New() *Server {
 			"subnet[1].assigned-addresses":         [][]any{{42, "2026-10-30 12:00:00.000000"}},
 			"subnet[1].pool[0].total-addresses":    [][]any{{100, "2026-10-30 12:00:00.000000"}},
 			"subnet[1].pool[0].assigned-addresses": [][]any{{42, "2026-10-30 12:00:00.000000"}},
+		},
+		Fail:    map[string]Failure{},
+		Unknown: map[string]bool{},
+	}
+}
+
+// New6 returns a kea-dhcp6 fake with one ULA subnet, two leases and a reservation.
+func New6() *Server {
+	now := time.Now().Unix()
+	return &Server{
+		Version: "3.0.3",
+		DHCP6:   true,
+		Config: map[string]any{
+			"valid-lifetime": 86400,
+			"subnet6": []any{map[string]any{
+				"id":        1,
+				"subnet":    "fd00:db8:1::/64",
+				"interface": "lan",
+				"pools":     []any{map[string]any{"pool": "fd00:db8:1::1000 - fd00:db8:1::ffff"}},
+				"pd-pools":  []any{map[string]any{"prefix": "fd00:db8:2::", "prefix-len": 48, "delegated-len": 56}},
+				"option-data": []any{map[string]any{
+					"name": "dns-servers", "code": 23, "space": "dhcp6", "data": "fd00:db8:1::1",
+				}},
+			}},
+		},
+		Leases6: []map[string]any{
+			{"ip-address": "fd00:db8:1::1000", "type": "IA_NA", "duid": "00:03:00:01:00:00:0c:00:00:01", "iaid": 1,
+				"hw-address": "00:00:0c:00:00:01", "hostname": "printer", "subnet-id": 1, "state": 0, "cltt": now - 60, "valid-lft": 86400, "preferred-lft": 43200},
+			{"ip-address": "fd00:db8:1::1001", "type": "IA_NA", "duid": "00:04:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99", "iaid": 7,
+				"hostname": "laptop", "subnet-id": 1, "state": 0, "cltt": now - 300, "valid-lft": 86400, "preferred-lft": 43200},
+		},
+		Hosts: []map[string]any{
+			{"subnet-id": 1, "duid": "00:03:00:01:00:00:0c:00:00:01", "ip-addresses": []any{"fd00:db8:1::10"}, "hostname": "printer"},
 		},
 		Fail:    map[string]Failure{},
 		Unknown: map[string]bool{},
@@ -150,28 +187,37 @@ func (s *Server) handle(command string, args map[string]any) (int, string, any) 
 	switch command {
 	case "list-commands":
 		commands := []any{"status-get", "config-get", "config-write", "lease4-get-all", "reservation-add", "class-get", "class-update"}
-		if !s.Unknown["subnet4-update"] {
-			commands = append(commands, "subnet4-get", "subnet4-update")
+		if s.DHCP6 {
+			commands = []any{"status-get", "config-get", "lease6-get-all", "reservation-get-all", "reservation-add"}
+		}
+		family := "subnet4"
+		if s.DHCP6 {
+			family = "subnet6"
+		}
+		if !s.Unknown[family+"-update"] {
+			commands = append(commands, family+"-get", family+"-update")
 		}
 		return 0, "", commands
-	case "subnet4-get":
-		subnets, _ := s.Config["subnet4"].([]any)
+	case "subnet4-get", "subnet6-get":
+		key := strings.TrimSuffix(command, "-get")
+		subnets, _ := s.Config[key].([]any)
 		for _, item := range subnets {
-			if o := item.(map[string]any); fmt.Sprint(o["id"]) == fmt.Sprint(args["id"]) {
-				return 0, "Info about IPv4 subnet returned", map[string]any{"subnet4": []any{o}}
+			if o := item.(map[string]any); sameID(o["id"], args["id"]) {
+				return 0, "Info about subnet returned", map[string]any{key: []any{o}}
 			}
 		}
 		return 3, "No subnet found", nil
-	case "subnet4-update":
-		update := args["subnet4"].([]any)[0].(map[string]any)
+	case "subnet4-update", "subnet6-update":
+		key := strings.TrimSuffix(command, "-update")
+		update := args[key].([]any)[0].(map[string]any)
 		if _, ok := update["reservations"]; ok {
-			return 1, "reservations are not allowed in subnet4-update", nil
+			return 1, "reservations are not allowed in " + command, nil
 		}
-		subnets, _ := s.Config["subnet4"].([]any)
+		subnets, _ := s.Config[key].([]any)
 		for i, item := range subnets {
-			if fmt.Sprint(item.(map[string]any)["id"]) == fmt.Sprint(update["id"]) {
+			if sameID(item.(map[string]any)["id"], update["id"]) {
 				subnets[i] = update
-				return 0, "IPv4 subnet updated", nil
+				return 0, "subnet updated", nil
 			}
 		}
 		return 1, "No subnet found", nil
@@ -233,6 +279,9 @@ func (s *Server) handle(command string, args map[string]any) (int, string, any) 
 		for k, v := range s.Config {
 			cfg[k] = v
 		}
+		if s.DHCP6 {
+			return 0, "", map[string]any{"Dhcp6": cfg, "hash": "ABC"}
+		}
 		return 0, "", map[string]any{"Dhcp4": cfg, "hash": "ABC"}
 	case "config-write":
 		s.Persisted = cloneHosts(s.Hosts)
@@ -244,6 +293,19 @@ func (s *Server) handle(command string, args map[string]any) (int, string, any) 
 			return 3, "0 IPv4 lease(s) found.", map[string]any{"leases": []any{}}
 		}
 		return 0, fmt.Sprintf("%d IPv4 lease(s) found.", len(s.Leases)), map[string]any{"leases": s.Leases}
+	case "lease6-get-all":
+		if len(s.Leases6) == 0 {
+			return 3, "0 IPv6 lease(s) found.", map[string]any{"leases": []any{}}
+		}
+		return 0, fmt.Sprintf("%d IPv6 lease(s) found.", len(s.Leases6)), map[string]any{"leases": s.Leases6}
+	case "lease6-del":
+		for i, l := range s.Leases6 {
+			if l["ip-address"] == args["ip-address"] && l["type"] == args["type"] {
+				s.Leases6 = slices.Delete(s.Leases6, i, i+1)
+				return 0, "IPv6 lease deleted.", nil
+			}
+		}
+		return 3, "IPv6 lease not found.", nil
 	case "lease4-del":
 		for i, l := range s.Leases {
 			if l["ip-address"] == args["ip-address"] {
@@ -345,4 +407,21 @@ func cloneHosts(in []map[string]any) []map[string]any {
 	out := make([]map[string]any, len(in))
 	copy(out, in)
 	return out
+}
+
+// sameID compares subnet ids, which arrive as float64 from JSON and are int in the
+// configurations of the tests.
+func sameID(a, b any) bool {
+	f := func(v any) float64 {
+		switch n := v.(type) {
+		case float64:
+			return n
+		case int:
+			return float64(n)
+		case int64:
+			return float64(n)
+		}
+		return -1
+	}
+	return f(a) == f(b)
 }

@@ -23,6 +23,8 @@ const (
 	leaseStateDeclined  = 1
 	leaseStateReclaimed = 2
 	leaseStateReleased  = 3
+	// an address a client configured itself and reported (RFC 9686), IPv6 only
+	leaseStateRegistered = 4
 )
 
 const (
@@ -37,7 +39,9 @@ const (
 // always start on the primary, so they are refused then.
 type Manager struct {
 	kea        *kea.Client
+	kea6       *kea.Client
 	peers      []server
+	peers6     []server
 	store      *Store
 	serverName string
 	readMu     sync.Mutex
@@ -151,23 +155,28 @@ func (m *Manager) leaseView(l kea.Lease, now time.Time) LeaseView {
 		Remaining: remaining,
 		Server:    m.sourceName(),
 	}
-	switch l.State {
-	case leaseStateDefault:
-		v.Active = remaining > 0
-		v.State = "active"
-		if !v.Active {
-			v.State = "expired"
-		}
-	case leaseStateDeclined:
-		v.State = "declined"
-	case leaseStateReclaimed:
-		v.State = "expired"
-	case leaseStateReleased:
-		v.State = "released"
-	default:
-		v.State = fmt.Sprintf("unknown (%d)", l.State)
-	}
+	v.State, v.Active = leaseState(l.State, remaining)
 	return v
+}
+
+// leaseState names the state of a lease and tells whether the client holds it.
+func leaseState(state int, remaining int64) (string, bool) {
+	switch state {
+	case leaseStateDefault:
+		if remaining > 0 {
+			return "active", true
+		}
+		return "expired", false
+	case leaseStateDeclined:
+		return "declined", false
+	case leaseStateReclaimed:
+		return "expired", false
+	case leaseStateReleased:
+		return "released", false
+	case leaseStateRegistered:
+		return "registered", remaining > 0
+	}
+	return fmt.Sprintf("unknown (%d)", state), false
 }
 
 // Leases returns all leases.
@@ -283,6 +292,8 @@ type ReservationView struct {
 	Comment        string       `json:"comment"`
 	InPool         bool         `json:"inPool"`
 	Lease          *LeaseView   `json:"lease"`
+	// IPv6 is what kea-dhcp6 has for the same MAC, if it is configured.
+	IPv6 *IPv6Ref `json:"ipv6,omitempty"`
 }
 
 // ReservationList is the answer of Reservations.
@@ -297,12 +308,21 @@ func (m *Manager) allHosts(ctx context.Context, subnets []kea.Subnet) ([]kea.Hos
 }
 
 func hostsOn(ctx context.Context, k *kea.Client, subnets []kea.Subnet) ([]kea.Host, error) {
+	ids := make([]int64, 0, len(subnets))
+	for _, s := range subnets {
+		ids = append(ids, s.ID)
+	}
+	return hostsIn(ctx, k, ids)
+}
+
+// hostsIn returns the global reservations and those of the given subnets.
+func hostsIn(ctx context.Context, k *kea.Client, subnetIDs []int64) ([]kea.Host, error) {
 	hosts, err := k.Reservations(ctx, 0)
 	if err != nil {
 		return nil, err
 	}
-	for _, s := range subnets {
-		list, err := k.Reservations(ctx, s.ID)
+	for _, id := range subnetIDs {
+		list, err := k.Reservations(ctx, id)
 		if err != nil {
 			return nil, err
 		}
@@ -339,6 +359,10 @@ func (m *Manager) Reservations(ctx context.Context) (*ReservationList, error) {
 	for _, l := range leases {
 		byIP[l.IPAddress] = l
 	}
+	ipv6, err := m.ipv6ByMAC(ctx)
+	if err != nil {
+		list.Warnings = append(list.Warnings, Warning{SeverityWarn, "IPv6 data unavailable: " + err.Error()})
+	}
 	now := m.now()
 	for _, h := range hosts {
 		idType, id := h.Identifier()
@@ -356,6 +380,7 @@ func (m *Manager) Reservations(ctx context.Context) (*ReservationList, error) {
 		}
 		if idType == "hw-address" {
 			v.Vendor = oui.Lookup(id)
+			v.IPv6 = ipv6[strings.ToLower(id)]
 		}
 		s := kea.SubnetFor(subnets, h)
 		if s != nil {
@@ -575,7 +600,7 @@ func HAStateSeverity(state string) Severity {
 	return SeverityWarn
 }
 
-func (m *Manager) haViews(ctx context.Context, status *kea.Status) ([]HAView, []Warning) {
+func (m *Manager) haViews(ctx context.Context, client *kea.Client, status *kea.Status) ([]HAView, []Warning) {
 	views := []HAView{}
 	warnings := []Warning{}
 	for _, rel := range status.HA {
@@ -584,7 +609,7 @@ func (m *Manager) haViews(ctx context.Context, status *kea.Status) ([]HAView, []
 		if v.Severity != SeverityOK {
 			warnings = append(warnings, Warning{v.Severity, fmt.Sprintf("HA state of %s: %s", local.ServerName, local.State)})
 		}
-		if hb, err := m.source(ctx).client.HAHeartbeat(ctx, local.ServerName); err == nil {
+		if hb, err := client.HAHeartbeat(ctx, local.ServerName); err == nil {
 			v.UnsentUpdates = &hb.UnsentUpdates
 		}
 		if r := rel.Servers.Remote; r != nil {
@@ -634,6 +659,7 @@ type Dashboard struct {
 	HA           []HAView     `json:"ha"`
 	HAWarnings   []Warning    `json:"haWarnings"`
 	Servers      []ServerRow  `json:"servers"`
+	Servers6     []ServerRow  `json:"servers6"`
 	RecentLeases []LeaseView  `json:"recentLeases"`
 	ActiveLeases *int         `json:"activeLeases"`
 	TotalLeases  *int         `json:"totalLeases"`
@@ -641,16 +667,21 @@ type Dashboard struct {
 	SubnetCount  *int         `json:"subnetCount"`
 	Subnets      []SubnetView `json:"subnets"`
 	Warnings     []Warning    `json:"warnings"`
+	DHCP6        *DHCP6Status `json:"dhcp6,omitempty"`
+	// RecentLeases6 and Subnets6 stay empty without kea-dhcp6.
+	RecentLeases6 []Lease6View   `json:"recentLeases6"`
+	Subnets6      []Subnet6Usage `json:"subnets6"`
 }
 
 // Dashboard collects the overview. It always succeeds: an unreachable server is
 // the very state it has to show.
 func (m *Manager) Dashboard(ctx context.Context) *Dashboard {
-	d := &Dashboard{HA: []HAView{}, HAWarnings: []Warning{}, Servers: []ServerRow{}, RecentLeases: []LeaseView{}, Subnets: []SubnetView{}, Warnings: []Warning{}}
+	d := &Dashboard{HA: []HAView{}, HAWarnings: []Warning{}, Servers: []ServerRow{}, Servers6: []ServerRow{}, RecentLeases6: []Lease6View{}, Subnets6: []Subnet6Usage{}, RecentLeases: []LeaseView{}, Subnets: []SubnetView{}, Warnings: []Warning{}}
 	src := m.source(ctx)
 	d.Server.Name = src.name
 	d.Server.URL = src.client.URL()
-	collectRows := m.startServerRows(ctx)
+	collectRows := m.startServerRows(ctx, false)
+	collectRows6 := m.startServerRows(ctx, true)
 	if src.client != m.kea {
 		d.Warnings = append(d.Warnings, Warning{SeverityCrit, fmt.Sprintf("%s is unreachable. Showing the data of %s; changes are not possible.", m.serverName, src.name)})
 	}
@@ -659,7 +690,7 @@ func (m *Manager) Dashboard(ctx context.Context) *Dashboard {
 	if err == nil {
 		d.Server.Reachable = true
 		d.Server.Uptime = status.Uptime
-		d.HA, d.HAWarnings = m.haViews(ctx, status)
+		d.HA, d.HAWarnings = m.haViews(ctx, src.client, status)
 		d.Warnings = append(d.Warnings, d.HAWarnings...)
 		if status.Sockets.Status != "" && status.Sockets.Status != "ready" {
 			d.Warnings = append(d.Warnings, Warning{SeverityCrit, "DHCP sockets: " + status.Sockets.Status})
@@ -677,7 +708,18 @@ func (m *Manager) Dashboard(ctx context.Context) *Dashboard {
 		d.Server.LastContact = &t
 	}
 	d.Servers = collectRows()
+	d.Servers6 = collectRows6()
 	d.Warnings = append(d.Warnings, rowWarnings(d.Servers)...)
+	d.Warnings = append(d.Warnings, rowWarnings(d.Servers6)...)
+	if d.DHCP6 = m.DHCP6(ctx); d.DHCP6 != nil {
+		if !d.DHCP6.Reachable {
+			d.Warnings = append(d.Warnings, Warning{SeverityCrit, "DHCPv6: " + d.DHCP6.Error})
+		}
+		d.Warnings = append(d.Warnings, d.DHCP6.warnings...)
+		if d.DHCP6.Reachable {
+			m.fillDHCP6(ctx, d)
+		}
+	}
 	return d
 }
 

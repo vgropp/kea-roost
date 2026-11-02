@@ -74,6 +74,22 @@ func run() error {
 		}
 		mgr.AddPeer(p.Name, peer)
 	}
+	if cfg.Kea6URL != "" {
+		options.URL = cfg.Kea6URL
+		client6, err := kea.NewClient(options)
+		if err != nil {
+			return err
+		}
+		mgr.SetDHCP6(client6)
+		for _, p := range cfg.Peers6 {
+			options.URL = p.URL
+			peer, err := kea.NewClient(options)
+			if err != nil {
+				return err
+			}
+			mgr.AddPeer6(p.Name, peer)
+		}
+	}
 	if cfg.ARPMonitorURL != "" {
 		mgr.SetARPMonitor(cfg.ARPMonitorURL)
 	}

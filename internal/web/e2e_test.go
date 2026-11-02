@@ -39,10 +39,12 @@ var monitorAnswer, dashboardAnswer string
 var withoutPeer bool
 
 type browser struct {
-	t    *testing.T
-	ctx  context.Context
-	url  string
-	fake *keatest.Server
+	t     *testing.T
+	ctx   context.Context
+	url   string
+	fake  *keatest.Server
+	fake6 *keatest.Server
+	peer6 *keatest.Server
 
 	mu     sync.Mutex
 	errors []string
@@ -102,8 +104,27 @@ func startWith(t *testing.T, accounts web.Auth, loggedIn bool) *browser {
 	}
 	mgr := manager.New(client, store, "primary")
 	mgr.SetARPMonitor(monitor.URL)
+	var fake6, peer6 *keatest.Server
 	if withoutPeer {
 		fake.HA = nil
+	} else {
+		// kea-dhcp6 runs as a hot-standby pair as well; the standby misses the reservation
+		fake6, peer6 = keatest.New6(), keatest.New6()
+		fake6.HA, peer6.HA = pairState("primary", "standby"), pairState("standby", "primary")
+		peer6.Hosts = nil
+		for i, f := range []*keatest.Server{fake6, peer6} {
+			srv6 := httptest.NewServer(f)
+			t.Cleanup(srv6.Close)
+			client6, err := kea.NewClient(kea.Options{URL: srv6.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if i == 0 {
+				mgr.SetDHCP6(client6)
+			} else {
+				mgr.AddPeer6("standby", client6)
+			}
+		}
 	}
 	peer := keatest.New()
 	seed(peer)
@@ -148,7 +169,7 @@ func startWith(t *testing.T, accounts web.Auth, loggedIn bool) *browser {
 	ctx, cancelTimeout := context.WithTimeout(ctx, browserTimeout)
 	t.Cleanup(cancelTimeout)
 
-	b := &browser{t: t, ctx: ctx, url: srv.URL, fake: fake}
+	b := &browser{t: t, ctx: ctx, url: srv.URL, fake: fake, fake6: fake6, peer6: peer6}
 	if err := chromedp.Do(ctx, chromedp.Navigate("about:blank")); err != nil {
 		t.Fatal(err)
 	}
@@ -244,8 +265,9 @@ func TestDashboard(t *testing.T) {
 			t.Errorf("column %s missing in %s", column, head)
 		}
 	}
-	rows := b.text(`[...document.querySelectorAll('.table-wrap')].at(-1).innerText`)
-	if !strings.Contains(rows, "active") || !strings.Contains(rows, "reserved") || !strings.Contains(rows, "new") {
+	rows := b.text(`[...document.querySelectorAll('h2')].find(x => x.textContent === 'Recent leases').nextElementSibling.innerText`)
+	reserved := b.text(`[...document.querySelectorAll('h2')].find(x => x.textContent === 'Recent leases').nextElementSibling.querySelector('a.reservation-link')?.textContent ?? ''`)
+	if !strings.Contains(rows, "active") || reserved != "nas" || !strings.Contains(rows, "new") {
 		t.Errorf("recent leases: %s", rows)
 	}
 	if strings.Contains(b.text(`document.body.innerText`), "[object") {
@@ -317,7 +339,8 @@ func TestReserveFromLeaseWithEditedAddress(t *testing.T) {
 	b.exec(field + `.value = '192.0.2.40'; document.querySelector('dialog form').requestSubmit()`)
 	b.poll(`document.querySelector('dialog h2')?.textContent === 'Change succeeded'`)
 	b.exec(`[...document.querySelectorAll('dialog button')].find(b => b.textContent === 'Close').click()`)
-	b.poll(`document.querySelector('tbody').innerText.includes('reserved: 192.0.2.40')`)
+	// the reservation shows with its name and, as it differs, its address
+	b.poll(`document.querySelector('tbody').innerText.includes('fridge → 192.0.2.40')`)
 	if !b.fake.HasCall("config-write") {
 		t.Error("the reservation was not persisted")
 	}
@@ -404,6 +427,7 @@ func TestEditChangesTheMAC(t *testing.T) {
 func TestDialogShowsFormerUseOfAnAddress(t *testing.T) {
 	b := start(t)
 	b.open("reservations", "Reservations")
+	b.poll(`[...document.querySelectorAll('button')].some(x => x.textContent === 'New reservation' && !x.disabled)`)
 	b.exec(`[...document.querySelectorAll('button')].find(b => b.textContent === 'New reservation').click()`)
 	b.poll(`document.querySelector('dialog form') !== null`)
 	input := func(label string) string {
@@ -424,6 +448,7 @@ func TestDialogShowsFormerUseOfAnAddress(t *testing.T) {
 func TestDialogShowsAddressConflictsWhileTyping(t *testing.T) {
 	b := start(t)
 	b.open("reservations", "Reservations")
+	b.poll(`[...document.querySelectorAll('button')].some(x => x.textContent === 'New reservation' && !x.disabled)`)
 	b.exec(`[...document.querySelectorAll('button')].find(b => b.textContent === 'New reservation').click()`)
 	b.poll(`document.querySelector('dialog form') !== null`)
 	address := `[...document.querySelectorAll('dialog label')].find(l => l.firstChild.textContent === 'IP address').querySelector('input')`
@@ -447,6 +472,7 @@ func TestDialogShowsAddressConflictsWhileTyping(t *testing.T) {
 func TestNewReservationIsRefusedWhenAddressIsReserved(t *testing.T) {
 	b := start(t)
 	b.open("reservations", "Reservations")
+	b.poll(`[...document.querySelectorAll('button')].some(x => x.textContent === 'New reservation' && !x.disabled)`)
 	b.exec(`[...document.querySelectorAll('button')].find(b => b.textContent === 'New reservation').click()`)
 	b.poll(`document.querySelector('dialog form') !== null`)
 	input := func(label string) string {
@@ -467,6 +493,7 @@ func TestNotesKeepTheirColorInEveryTheme(t *testing.T) {
 		for _, mode := range []string{"light", "dark"} {
 			b.theme(theme, mode)
 			b.open("reservations", "Reservations")
+			b.poll(`[...document.querySelectorAll('button')].some(x => x.textContent === 'New reservation' && !x.disabled)`)
 			b.exec(`[...document.querySelectorAll('button')].find(b => b.textContent === 'New reservation').click()`)
 			b.poll(`document.querySelector('dialog form') !== null`)
 			b.exec(`const a = [...document.querySelectorAll('dialog label')].find(l => l.firstChild.textContent === 'IP address').querySelector('input');
@@ -496,7 +523,8 @@ func TestReservationDialogOffersClasses(t *testing.T) {
 	if !evaluate[bool](b, `document.querySelector('dialog .class-list input').checked`) {
 		t.Error("assigned class not selected")
 	}
-	b.exec(`closeDialog()`)
+	b.exec(`[...document.querySelectorAll('dialog button')].find(b => b.textContent === 'Cancel').click()`)
+	b.poll(`[...document.querySelectorAll('button')].some(x => x.textContent === 'New reservation' && !x.disabled)`)
 	b.exec(`[...document.querySelectorAll('button')].find(b => b.textContent === 'New reservation').click()`)
 	b.poll(`document.querySelector('dialog .class-list') !== null`)
 	if evaluate[bool](b, `document.querySelector('dialog .class-list input').checked`) {
@@ -551,7 +579,7 @@ func TestDevicesMarkAge(t *testing.T) {
 	}
 	b.exec(`const s = document.querySelector('.toolbar select'); s.value = ''; s.dispatchEvent(new Event('change'));`)
 	b.poll(`document.querySelector('tbody').innerText.includes('printer.lan')`)
-	if got := b.text(`document.querySelector('tbody').innerText`); !strings.Contains(got, "reserved") || !strings.Contains(got, "direct-dns") {
+	if got := b.text(`document.querySelector('tbody').innerText`); !strings.Contains(got, "nas") || !strings.Contains(got, "direct-dns") {
 		t.Errorf("all devices: %s", got)
 	}
 }
@@ -569,14 +597,14 @@ func TestSubnetLinksToItsReservations(t *testing.T) {
 func TestServersShowDifferencesAndCopyThem(t *testing.T) {
 	b := start(t)
 	b.do(chromedp.Navigate(b.url + "/#/servers"))
-	b.poll(`document.querySelectorAll('.server-card').length === 2`)
-	b.poll(`document.querySelector('.server-card:nth-child(2)').textContent.includes('1 difference')`)
-	b.exec(`[...document.querySelectorAll('.server-card button')].find(x => x.textContent === 'Copy from primary').click()`)
+	b.poll(`[...document.querySelectorAll('.server-card')].filter(c => c.querySelector('.family-tag')?.textContent === 'DHCPv4').length === 2`)
+	b.poll(`[...document.querySelectorAll('.server-card')].filter(c => c.querySelector('.family-tag')?.textContent === 'DHCPv4')[1].textContent.includes('1 difference')`)
+	b.exec(`[...document.querySelectorAll('.server-card')].filter(c => c.querySelector('.family-tag')?.textContent === 'DHCPv4').flatMap(c => [...c.querySelectorAll('button')]).find(x => x.textContent === 'Copy from primary').click()`)
 	b.poll(`document.querySelector('dialog')?.textContent.includes('Make standby match the primary')`)
 	b.exec(`[...document.querySelectorAll('dialog button')].find(x => x.textContent === 'Copy').click()`)
 	b.poll(`document.querySelector('dialog')?.textContent.includes('Change succeeded')`)
 	b.exec(`[...document.querySelectorAll('dialog button')].find(x => x.textContent === 'Close').click()`)
-	b.poll(`document.querySelector('.server-card:nth-child(2)')?.textContent.includes('in sync')`)
+	b.poll(`[...document.querySelectorAll('.server-card')].filter(c => c.querySelector('.family-tag')?.textContent === 'DHCPv4')[1]?.textContent.includes('in sync')`)
 }
 
 func TestDashboardListsBothServers(t *testing.T) {
@@ -590,7 +618,7 @@ func TestServersPageOperatesHA(t *testing.T) {
 	b := start(t)
 	b.do(chromedp.Navigate(b.url + "/#/servers"))
 	b.poll(`[...document.querySelectorAll('button')].some(x => x.textContent === 'Start maintenance')`)
-	b.exec(`[...document.querySelectorAll('.server-card')].find(x => x.textContent.includes('standby')).querySelector('button').click()`)
+	b.exec(`[...document.querySelectorAll('.server-card')].filter(c => c.querySelector('.family-tag')?.textContent === 'DHCPv4').find(x => x.textContent.includes('standby')).querySelector('button').click()`)
 	b.poll(`document.querySelector('dialog')?.textContent.includes('takes over all DHCP traffic')`)
 	b.exec(`document.querySelector('dialog button.solid').click()`)
 	b.poll(`document.querySelector('dialog h2')?.textContent === 'Change succeeded'`)
@@ -613,6 +641,177 @@ func TestServersPageWithOneServer(t *testing.T) {
 			t.Errorf("%s belongs to several servers: %s", part, got)
 		}
 	}
+}
+
+// pairState is the HA state of one half of a hot-standby pair.
+func pairState(local, remote string) []any {
+	return []any{map[string]any{
+		"ha-mode": "hot-standby",
+		"ha-servers": map[string]any{
+			"local": map[string]any{"role": local, "scopes": []any{}, "server-name": local, "state": "hot-standby", "system-time": "2026-10-30 12:00:00"},
+			"remote": map[string]any{"age": 3, "clock-skew": 0, "communication-interrupted": false, "in-touch": true,
+				"last-scopes": []any{}, "last-state": "hot-standby", "role": remote, "server-name": remote},
+		},
+	}}
+}
+
+func TestServersPageForIPv6(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/servers"))
+	b.poll(`[...document.querySelectorAll('.server-card')].filter(c => c.querySelector('.family-tag')?.textContent === 'DHCPv6').length === 2`)
+	b.poll(`document.querySelector('.family-switch') === null && document.querySelectorAll('.family-grid > h2')[1]?.textContent === 'DHCPv6'`)
+	b.poll(`[...document.querySelectorAll('.server-card')].filter(c => c.querySelector('.family-tag')?.textContent === 'DHCPv6')[1]?.textContent.includes('1 difference')`)
+	got := b.text(`document.querySelector('main').innerText`)
+	for _, part := range []string{"HA connection"} {
+		if !strings.Contains(got, part) {
+			t.Errorf("%s missing in %s", part, got)
+		}
+	}
+	b.exec(`[...document.querySelectorAll('.server-card')].filter(c => c.querySelector('.family-tag')?.textContent === 'DHCPv6').flatMap(c => [...c.querySelectorAll('button')]).find(x => x.textContent === 'Copy from primary').click()`)
+	b.exec(`[...document.querySelectorAll('dialog button')].find(x => x.textContent === 'Copy').click()`)
+	b.poll(`document.querySelector('dialog')?.textContent.includes('Change succeeded')`)
+	b.peer6.Lock()
+	hosts := len(b.peer6.Hosts)
+	b.peer6.Unlock()
+	if hosts != 1 || b.fake.HasCall("reservation-add") {
+		t.Errorf("the IPv6 standby holds %d reservations", hosts)
+	}
+	b.exec(`[...document.querySelectorAll('dialog button')].find(x => x.textContent === 'Close').click()`)
+	b.poll(`[...document.querySelectorAll('.server-card')].filter(c => c.querySelector('.family-tag')?.textContent === 'DHCPv6')[1]?.textContent.includes('in sync')`)
+
+	// maintenance goes to the IPv6 pair, not to the IPv4 one
+	b.exec(`[...document.querySelectorAll('.server-card')].filter(c => c.querySelector('.family-tag')?.textContent === 'DHCPv6')[1].querySelector('.ha-actions button').click()`)
+	b.poll(`document.querySelector('dialog')?.textContent.includes('takes over all DHCP traffic')`)
+	b.exec(`document.querySelector('dialog button.solid').click()`)
+	b.poll(`document.querySelector('dialog h2')?.textContent === 'Change succeeded'`)
+	if !b.fake6.HasCall("ha-maintenance-start") || b.fake.HasCall("ha-maintenance-start") {
+		t.Error("maintenance of the IPv6 standby did not go to the IPv6 primary")
+	}
+
+	b.open("dashboard", "Dashboard")
+	b.poll(`[...document.querySelectorAll('td .tag')].some(x => x.textContent === 'IPv6')`)
+}
+
+// Both families of a server stand in one row, also when one side has a warning,
+// an HA state that is not ok and a list of differences.
+func TestServersPageKeepsFamiliesAligned(t *testing.T) {
+	b := start(t)
+	b.peer6.Lock()
+	b.peer6.HA[0].(map[string]any)["ha-servers"].(map[string]any)["local"].(map[string]any)["state"] = "waiting"
+	b.peer6.Unlock()
+	b.fake6.Lock()
+	b.fake6.HA[0].(map[string]any)["ha-servers"].(map[string]any)["remote"].(map[string]any)["last-state"] = "waiting"
+	b.fake6.Unlock()
+	b.do(chromedp.Navigate(b.url + "/#/servers"))
+	b.poll(`document.querySelectorAll('.family-grid .server-card').length === 4 && document.body.innerText.includes('DHCPv6: HA partner')`)
+	// v4, v6 pairs in the grid order: HA panels, then one pair per server
+	misaligned := b.text(`(() => {
+		const grid = [...document.querySelector('.family-grid').children].slice(2);
+		const out = [];
+		for (let i = 0; i < grid.length; i += 2) {
+			const a = grid[i].getBoundingClientRect(), b = grid[i + 1].getBoundingClientRect();
+			if (Math.abs(a.top - b.top) > 1 || Math.abs(a.height - b.height) > 1) out.push(i / 2 + ': ' + a.top + '/' + a.height + ' vs ' + b.top + '/' + b.height);
+		}
+		return out.join('; ');
+	})()`)
+	if misaligned != "" {
+		t.Errorf("rows are not aligned: %s", misaligned)
+	}
+}
+
+func TestNoIPv6SwitchWithoutDHCPv6(t *testing.T) {
+	withoutPeer = true
+	b := start(t)
+	withoutPeer = false
+	b.open("leases", "Leases")
+	if b.text(`String(document.querySelector('.family-switch'))`) != "null" {
+		t.Error("the IPv4/IPv6 switch shows without DHCPv6")
+	}
+}
+
+func TestIPv6PagesSwitchFromIPv4(t *testing.T) {
+	b := start(t)
+	b.open("leases", "Leases")
+	b.exec(`[...document.querySelectorAll('.family-switch a')].find(a => a.textContent === 'IPv6').click()`)
+	b.poll(`document.querySelectorAll('tbody tr').length === 2 && document.querySelector('.family-switch a.active')?.textContent === 'IPv6'`)
+	// the lease of a known MAC is named by the IPv4 reservation
+	got := b.text(`document.querySelector('tbody').innerText`)
+	for _, part := range []string{"fd00:db8:1::1000", "nas", "192.0.2.10", "printer"} {
+		if !strings.Contains(got, part) {
+			t.Errorf("%s missing in %s", part, got)
+		}
+	}
+	b.do(chromedp.Navigate(b.url + "/#/reservations?v=6"))
+	b.poll(`document.querySelector('tbody')?.innerText.includes('fd00:db8:1::10')`)
+	b.do(chromedp.Navigate(b.url + "/#/subnets?v=6"))
+	b.poll(`document.body.innerText.includes('61.440 addresses') && document.body.innerText.includes('fd00:db8:2::/48, each /56')`)
+	// the IPv4 page stays the default and the navigation the same
+	b.open("leases", "Leases")
+	b.poll(`document.querySelector('.family-switch a.active')?.textContent === 'IPv4'`)
+}
+
+func TestIPv6ReservationFromLease(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/leases?v=6"))
+	// the printer is reserved already, the laptop is not
+	b.poll(`[...document.querySelectorAll('tbody tr')].filter(tr => tr.querySelector('button')?.textContent === 'Reserve').length === 1`)
+	b.fake6.Lock()
+	b.fake6.Leases6[1]["hostname"] = "laptop."
+	b.fake6.Unlock()
+	b.do(chromedp.Navigate(b.url + "/#/leases?v=6&reload"))
+	b.poll(`document.querySelectorAll('tbody tr').length === 2 && [...document.querySelectorAll('tbody button')].some(x => x.textContent === 'Reserve')`)
+	b.exec(`[...document.querySelectorAll('tbody button')].find(x => x.textContent === 'Reserve').click()`)
+	b.poll(`document.querySelector('dialog form input.mono-input')?.value.startsWith('00:04:aa')`)
+	// the dot of the FQDN the client sent is not part of the suggested name
+	b.poll(`[...document.querySelectorAll('dialog input')].some(i => i.value === 'laptop')`)
+	b.exec(`document.querySelector('dialog form').requestSubmit()`)
+	b.poll(`document.querySelector('dialog h2')?.textContent === 'Change succeeded'`)
+	if !b.fake6.HasCall("config-write") {
+		t.Error("kea-dhcp6 did not save")
+	}
+	b.exec(`[...document.querySelectorAll('dialog button')].find(x => x.textContent === 'Close').click()`)
+	b.do(chromedp.Navigate(b.url + "/#/reservations?v=6"))
+	b.poll(`document.querySelector('tbody')?.innerText.includes('fd00:db8:1::1001') && document.querySelector('tbody')?.innerText.includes('laptop')`)
+}
+
+func TestReservationDialogsShowTheOtherFamily(t *testing.T) {
+	b := start(t)
+	b.open("reservations", "Reservations")
+	b.exec(`[...document.querySelectorAll('tbody tr')].find(tr => tr.innerText.includes('00:00:0c:00:00:01')).querySelector('button').click()`)
+	b.poll(`document.querySelector('dialog .other-family')?.textContent.includes('reserved fd00:db8:1::10')`)
+	b.exec(`document.querySelector('dialog .other-family a').click()`)
+	b.poll(`location.hash.startsWith('#/reservations?v=6') && document.querySelector('tbody')?.innerText.includes('fd00:db8:1::10')`)
+	b.exec(`[...document.querySelectorAll('tbody button')].find(x => x.textContent === 'Edit').click()`)
+	b.poll(`document.querySelector('dialog .other-family')?.textContent.includes('192.0.2.10')`)
+}
+
+func TestClippedCellOpensForCopying(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/leases?v=6"))
+	b.poll(`document.querySelectorAll('tbody tr').length === 2`)
+	b.exec(`document.querySelector('tbody td.clip').click()`)
+	b.poll(`document.querySelector('tbody td.clip.open') !== null && getSelection().toString().startsWith('00:0')`)
+	b.open("leases", "Leases")
+	b.poll(`[...document.querySelectorAll('tbody td.clip .tag')].some(t => t.textContent === 'DUID')`)
+	b.exec(`[...document.querySelectorAll('tbody td.clip .tag')].find(t => t.textContent === 'DUID').closest('td').click()`)
+	// only the id is selected, not the mark in front of it
+	b.poll(`getSelection().toString() === 'ff:12:34:56:78:00:03:00:01:02:00:00:aa:01:66'`)
+	// one line, like the DUID of IPv6: as high as a closed cell
+	b.poll(`(() => { const v = document.querySelector('tbody td.clip.open .value'); return v.getClientRects().length === 1 })()`)
+}
+
+func TestIPv6LeaseLinksToItsReservation(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/leases?v=6"))
+	b.poll(`[...document.querySelectorAll('tbody a.reservation-link')].some(a => a.textContent === 'printer')`)
+	b.exec(`[...document.querySelectorAll('tbody a.reservation-link')].find(a => a.textContent === 'printer').click()`)
+	b.poll(`location.hash.startsWith('#/reservations?v=6') && document.querySelectorAll('tbody tr').length === 1 && document.querySelector('tbody').innerText.includes('fd00:db8:1::10')`)
+}
+
+func TestAboutLine(t *testing.T) {
+	b := start(t)
+	b.open("dashboard", "Dashboard")
+	b.poll(`document.getElementById('about')?.querySelector('a')?.href === 'https://github.com/vgropp/kea-roost'`)
 }
 
 func TestClientPopupExplainsAddress(t *testing.T) {
@@ -918,4 +1117,164 @@ func TestSecondFactorSetupInTheBrowser(t *testing.T) {
 	b.exec(fmt.Sprintf(`const f = [...document.querySelectorAll('dialog form')].at(-1); f.querySelector('input').value = %q;
 		f.querySelector('input[type="password"]').value = %q; f.requestSubmit()`, code, adminPassword))
 	b.poll(`document.querySelector('dialog input.switch')?.checked === true && !document.querySelector('.totp-qr')`)
+}
+
+func TestDashboardShowsIPv6LeasesAndDeletesOne(t *testing.T) {
+	b := start(t)
+	b.open("dashboard", "Dashboard")
+	b.poll(`[...document.querySelectorAll('h2')].some(x => x.textContent === 'Recent IPv6 leases')`)
+	b.poll(`[...document.querySelectorAll('.meter-row a')].some(a => a.getAttribute('href') === '#/subnets?v=6' && a.textContent === 'fd00:db8:1::/64')`)
+	b.do(chromedp.Navigate(b.url + "/#/leases?v=6"))
+	b.poll(`document.querySelectorAll('tbody tr').length === 2`)
+	b.exec(`[...document.querySelectorAll('tbody button')].find(x => x.textContent === 'Delete').click()`)
+	b.poll(`document.querySelector('dialog')?.textContent.includes('Really delete lease fd00:db8:1::1000')`)
+	b.exec(`document.querySelector('dialog button.solid').click()`)
+	b.poll(`document.querySelectorAll('tbody tr').length === 1`)
+	b.fake6.Lock()
+	left := len(b.fake6.Leases6)
+	b.fake6.Unlock()
+	b.peer6.Lock()
+	leftPeer := len(b.peer6.Leases6)
+	b.peer6.Unlock()
+	if left != 1 || leftPeer != 1 {
+		t.Errorf("leases left: %d on the primary, %d on the peer", left, leftPeer)
+	}
+}
+
+func TestIPv6SubnetCanBeEdited(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/subnets?v=6"))
+	b.poll(`document.querySelector('.subnet-edit') !== null`)
+	b.exec(`document.querySelector('.subnet-edit').click()`)
+	b.poll(`document.querySelector('dialog h2')?.textContent === 'Edit subnet fd00:db8:1::/64'`)
+	got := b.text(`document.querySelector('dialog').innerText`)
+	if strings.Contains(got, "Gateway") || !strings.Contains(got, "Preferred lifetime") {
+		t.Errorf("dialog: %s", got)
+	}
+	b.exec(`(() => {
+		const inputs = document.querySelectorAll('dialog .pool-row input');
+		inputs[0].value = 'fd00:db8:1::1000-fd00:db8:1::1fff';
+		const preferred = [...document.querySelectorAll('dialog .field')].find(f => f.textContent.includes('Preferred')).querySelector('input');
+		preferred.value = '3600';
+		document.querySelector('dialog form').requestSubmit();
+	})()`)
+	// the laptop lease at ::1001 stays inside, so there is nothing to confirm
+	b.poll(`document.querySelector('dialog h2')?.textContent === 'Change succeeded'`)
+	for _, f := range []*keatest.Server{b.fake6, b.peer6} {
+		f.Lock()
+		s := f.Config["subnet6"].([]any)[0].(map[string]any)
+		pools, preferred := fmt.Sprint(s["pools"]), fmt.Sprint(s["preferred-lifetime"])
+		f.Unlock()
+		if !strings.Contains(pools, "fd00:db8:1::1000-fd00:db8:1::1fff") || preferred != "3600" {
+			t.Errorf("subnet: %s %s", pools, preferred)
+		}
+	}
+}
+
+func TestIPv6AddressOpensItsExplanation(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/leases?v=6"))
+	b.poll(`document.querySelectorAll('tbody tr').length === 2`)
+	b.exec(`[...document.querySelectorAll('tbody a.client-link')].find(a => a.textContent === 'fd00:db8:1::1000').click()`)
+	b.poll(`document.querySelector('dialog')?.textContent.includes('Why it has this address')`)
+	got := b.text(`document.querySelector('dialog').innerText`)
+	for _, part := range []string{"printer", "comes from the pool", "dns-servers", "IPv4 device"} {
+		if !strings.Contains(got, part) {
+			t.Errorf("%s missing in %s", part, got)
+		}
+	}
+}
+
+func TestIPv6PrefixDelegationCanBeEdited(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/subnets?v=6"))
+	b.poll(`document.querySelector('.subnet-edit') !== null`)
+	b.exec(`document.querySelector('.subnet-edit').click()`)
+	b.poll(`document.querySelectorAll('dialog .pd-row').length === 1`)
+	if got := b.text(`document.querySelector('dialog .pd-row input').value`); got != "fd00:db8:2::/48" {
+		t.Fatalf("prefix pool shown as %q", got)
+	}
+	b.exec(`(() => {
+		[...document.querySelectorAll('dialog button')].find(x => x.textContent === 'Add prefix pool').click();
+		const inputs = document.querySelectorAll('dialog .pd-row')[1].querySelectorAll('input');
+		inputs[0].value = 'fd00:db8:3::/48';
+		inputs[1].value = '60';
+		document.querySelector('dialog form').requestSubmit();
+	})()`)
+	b.poll(`document.querySelector('dialog h2')?.textContent === 'Change succeeded'`)
+	b.fake6.Lock()
+	got := fmt.Sprint(b.fake6.Config["subnet6"].([]any)[0].(map[string]any)["pd-pools"])
+	b.fake6.Unlock()
+	if !strings.Contains(got, "fd00:db8:3::") || !strings.Contains(got, "delegated-len:60") || !strings.Contains(got, "fd00:db8:2::") {
+		t.Errorf("pd-pools: %s", got)
+	}
+
+	b.do(chromedp.Navigate(b.url + "/#/reservations?v=6"))
+	b.poll(`[...document.querySelectorAll('button')].some(x => x.textContent === 'New reservation')`)
+	b.poll(`[...document.querySelectorAll('button')].some(x => x.textContent === 'New reservation' && !x.disabled)`)
+	b.exec(`[...document.querySelectorAll('button')].find(x => x.textContent === 'New reservation').click()`)
+	b.poll(`document.querySelector('dialog form') !== null`)
+	b.exec(`(() => {
+		const field = label => [...document.querySelectorAll('dialog .field')].find(f => f.querySelector('label')?.textContent.startsWith(label)).querySelector('input');
+		field('Identifier').value = '00:03:00:01:02:00:00:00:00:77';
+		field('Delegated prefixes').value = 'fd00:db8:2:300::/56';
+		field('DNS name').value = 'router';
+		document.querySelector('dialog form').requestSubmit();
+	})()`)
+	b.poll(`document.querySelector('dialog h2')?.textContent === 'Change succeeded'`)
+	b.fake6.Lock()
+	last := fmt.Sprint(b.fake6.Hosts[len(b.fake6.Hosts)-1]["prefixes"])
+	b.fake6.Unlock()
+	if last != "[fd00:db8:2:300::/56]" {
+		t.Errorf("reserved prefixes: %s", last)
+	}
+}
+
+func TestIPv6SubnetMap(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/subnets?v=6"))
+	b.poll(`document.querySelectorAll('.map6 .addr-grid')[0]?.children.length === 256`)
+	// the first square holds both leases
+	b.exec(`document.querySelector('.map6 .addr-grid button').click()`)
+	b.poll(`document.querySelector('.addr-detail')?.textContent.includes('fd00:db8:1::1000')`)
+	got := b.text(`document.querySelector('.map6-panel').innerText`)
+	for _, part := range []string{"Pool fd00:db8:1::1000 - fd00:db8:1::ffff", "a square holds 240", "Prefix pool fd00:db8:2::/48, each /56", "0 of 256 prefixes used", "Outside of the pools", "fd00:db8:1::10"} {
+		if !strings.Contains(got, part) {
+			t.Errorf("%s missing in %s", part, got)
+		}
+	}
+}
+
+func TestIPv6ReservationWarnsAboutThePool(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/leases?v=6"))
+	b.poll(`[...document.querySelectorAll('tbody button')].some(x => x.textContent === 'Reserve')`)
+	b.exec(`[...document.querySelectorAll('tbody button')].find(x => x.textContent === 'Reserve').click()`)
+	// the lease address lies in the pool: the dialog says so and offers a free one
+	b.poll(`document.querySelector('dialog .field-note')?.textContent.includes('fd00:db8:1::1000 - fd00:db8:1::ffff')`)
+	b.poll(`document.querySelector('dialog .note.warn')?.textContent.includes('inside the dynamic pool')`)
+	b.exec(`[...document.querySelectorAll('dialog .note.warn button')].find(x => x.textContent.startsWith('Use ')).click()`)
+	b.poll(`[...document.querySelectorAll('dialog input')].some(i => i.value === 'fd00:db8:1::2') && !document.querySelector('dialog .note.warn')`)
+}
+
+func TestIPv6ReservationStartsWithThePrefix(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/reservations?v=6"))
+	b.poll(`[...document.querySelectorAll('button')].some(x => x.textContent === 'New reservation' && !x.disabled)`)
+	b.exec(`[...document.querySelectorAll('button')].find(x => x.textContent === 'New reservation').click()`)
+	field := `label => [...document.querySelectorAll('dialog .field')].find(f => f.querySelector('label')?.textContent.startsWith(label)).querySelector('input')`
+	b.poll(`(` + field + `)('Addresses').value === 'fd00:db8:1::'`)
+	b.exec(`(() => {
+		const field = ` + field + `;
+		field('Identifier').value = '00:03:00:01:02:00:00:00:00:31';
+		field('Addresses').value = '::30';
+		document.querySelector('dialog form').requestSubmit();
+	})()`)
+	b.poll(`document.querySelector('dialog h2')?.textContent === 'Change succeeded'`)
+	b.fake6.Lock()
+	got := fmt.Sprint(b.fake6.Hosts[len(b.fake6.Hosts)-1]["ip-addresses"])
+	b.fake6.Unlock()
+	if got != "[fd00:db8:1::30]" {
+		t.Errorf("reserved %s", got)
+	}
 }

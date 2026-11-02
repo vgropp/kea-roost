@@ -41,6 +41,7 @@ the list of all checks, with open points first:
 | HA | State, partner, clock skew, lease updates held back while the partner was away |
 | Hooks | Which are loaded and what is missing without them |
 | Configuration | Write lock from a lost option, same state on all servers, same Kea release |
+| DHCPv6 | With [IPv6](ipv6.md): every `kea-dhcp6` reachable, its sockets, hooks and HA state |
 | Integrations | arpmonitor and openwrt-ap-dashboard reachable |
 
 The DHCP traffic shows Discover, Offer, Request and Ack as bars, with counters for NAKs,
@@ -122,5 +123,26 @@ say so instead of reporting nothing. Clients the AP dashboard reports count as s
 The time spans are set on the [Settings](configuration.md#settings) page. Addresses are
 only compared for reservations by MAC address. Devices that sleep or stay silent can show
 up as notes.
+
+### IPv6
+
+With [IPv6](ipv6.md), the review checks `kea-dhcp6` as well. Its findings carry an IPv6
+mark.
+
+| Rule | Level | Finds |
+|---|---|---|
+| Subnet reservations are switched on | Problem | Subnet reservations exist, but `reservations-in-subnet` is off |
+| No address is reserved twice | Problem | Two reservations with one address |
+| Reservations lie inside their subnet | Problem | A reserved address outside of the subnet of the reservation |
+| Pools do not overlap | Problem | Two pools sharing addresses |
+| Pools lie inside their subnet | Problem | A pool reaching outside of its subnet |
+| Every subnet names its interface or relay | Warning | Without one, Kea cannot tell that clients on a local link belong to the subnet |
+| No hostname is used by two reservations | Warning | One name on several reservations |
+| Every subnet has a pool or a reservation | Warning | A subnet that serves nobody |
+| Reserved addresses lie outside of the pools | Note | A reserved address inside a pool |
+| Every subnet offers a DNS server | Note | No `dns-servers` option |
+
+The client popup explains IPv6 addresses too, without client classes, which Kea Roost
+does not evaluate for IPv6.
 
 Warnings in the log of Kea are not part of this, because its API does not offer them.

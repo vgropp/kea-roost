@@ -2,8 +2,17 @@
 
 // Hostnames and option values originate from DHCP clients. All text therefore
 // goes through textContent; this file must never assign innerHTML.
+/**
+ * Builds an element. Children become text nodes or are appended as they are; no
+ * string is ever parsed as HTML.
+ * @template {keyof HTMLElementTagNameMap} K
+ * @param {K} tag
+ * @param {Record<string, any>} [attrs]
+ * @param {...any} children
+ * @returns {HTMLElementTagNameMap[K]}
+ */
 function h(tag, attrs, ...children) {
-  const el = document.createElement(tag);
+  const el = /** @type {any} */ (document.createElement(tag));
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v === undefined || v === null || v === false) continue;
     if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
@@ -20,7 +29,7 @@ function h(tag, attrs, ...children) {
 }
 
 const view = document.getElementById('view');
-const dialog = document.getElementById('dialog');
+const dialog = /** @type {HTMLDialogElement} */ (document.getElementById('dialog'));
 let dialogGeneration = 0;
 let meta = { writable: false, serverName: '' };
 
@@ -42,11 +51,20 @@ async function api(method, path, body) {
   try { data = text ? JSON.parse(text) : null; } catch { /* non-JSON error page */ }
   if (data && data.status && data.steps) return data; // change result, also on failure
   if (!res.ok) {
-    const err = new Error((data && data.error) || `HTTP ${res.status}`);
-    err.problems = data && data.problems;
-    throw err;
+    throw Object.assign(new Error((data && data.error) || `HTTP ${res.status}`), { problems: data && data.problems });
   }
   return data;
+}
+
+// Sort key of an IPv6 address: all eight groups written out, so text order is address order.
+function ip6Key(ip) {
+  if (!ip) return '';
+  const address = ip.split('/')[0];
+  const [head, tail = ''] = address.split('::');
+  const first = head ? head.split(':') : [];
+  const last = tail ? tail.split(':') : [];
+  const groups = address.includes('::') ? [...first, ...Array(8 - first.length - last.length).fill('0'), ...last] : first;
+  return groups.map(g => g.padStart(4, '0')).join('');
 }
 
 function ipKey(ip) {
@@ -94,6 +112,16 @@ function errorNote(err) {
 
 // Table with search, filters and sorting. Data stays in the browser, so typing
 // does not trigger a lease4-get-all on every key press.
+// A clipped cell opens on click: the whole value shows and is selected, ready to
+// copy. Links inside keep working.
+function openClipped(event) {
+  if (event.target.closest('a')) return;
+  const cell = event.currentTarget;
+  if (!cell.classList.toggle('open')) return;
+  getSelection().selectAllChildren(cell.querySelector('.value') || cell);
+}
+
+/** @param {DataTableOptions} options */
 function dataTable({ columns, search, filters = [], empty, initialSort, actions = [], params = new URLSearchParams(), rowClass, plain, pageSize }) {
   const sort = { key: initialSort, dir: 1 };
   const query = { text: (params.get('q') || '').toLowerCase() };
@@ -147,7 +175,7 @@ function dataTable({ columns, search, filters = [], empty, initialSort, actions 
     const turn = (label, target, enabled) => h('button', { class: 'small', disabled: enabled ? undefined : '', onclick: () => { page = target; draw(); } }, label);
     pager.replaceChildren(...(pages > 1 ? [turn('Previous', page - 1, page > 0), h('span', { class: 'count' }, `Page ${page + 1} of ${pages}`), turn('Next', page + 1, page < pages - 1)] : []));
     const cells = shown.map(row => h('tr', { class: rowClass?.(row) },
-      columns.map(c => h('td', { class: c.class || '' }, c.render ? c.render(row) : (row[c.key] || '–'))),
+      columns.map(c => h('td', { class: c.class || '', onclick: c.class?.includes('clip') ? openClipped : null }, c.render ? c.render(row) : (row[c.key] || '–'))),
       actions.length ? h('td', { class: 'actions' }, actions.map(a => a(row))) : null));
     body.replaceChildren(...(cells.length ? cells
       : [h('tr', {}, h('td', { colspan: columns.length + 1, class: 'empty' }, rows.length ? 'No matches' : empty))]));
@@ -283,17 +311,20 @@ pages.dashboard = () => {
         tile('Kea version', d.server.version || '–', d.server.uptime ? 'Uptime ' + fmtDuration(d.server.uptime) : ''),
         tile('HA state', ha ? state(d.ha[0].severity, ha['ha-servers'].local.state) : state('neutral', d.server.reachable ? 'no HA' : 'unknown'),
           ha ? ha['ha-servers'].local.role : '', '#/servers'),
-        tile('Active leases', fmtCount(d.activeLeases), d.totalLeases != null ? `${fmtCount(d.totalLeases)} total` : '', '#/leases'),
+        tile('Active leases', fmtCount(d.activeLeases), [d.totalLeases != null ? `${fmtCount(d.totalLeases)} total` : '', d.dhcp6?.activeLeases != null ? `${fmtCount(d.dhcp6.activeLeases)} IPv6` : ''].filter(Boolean).join(' · '), '#/leases'),
         tile('Reservations', fmtCount(d.reservations), '', '#/reservations'),
         tile('Subnets', fmtCount(d.subnetCount), '', '#/subnets'),
         tile('Last contact', d.server.lastContact ? h('span', { title: d.server.url }, new Date(d.server.lastContact).toLocaleTimeString(DATE_LOCALE)) : '–')),
-      d.servers.length ? h('h2', {}, 'Servers') : null,
-      d.servers.length ? serverOverview(d.servers) : null,
+      d.servers.length || d.servers6.length ? h('h2', {}, 'Servers') : null,
+      d.servers.length || d.servers6.length ? serverOverview([...d.servers, ...d.servers6]) : null,
       d.recentLeases.length ? h('h2', {}, 'Recent leases') : null,
       d.recentLeases.length ? recentLeases(d.recentLeases, load) : null,
+      d.recentLeases6.length ? h('h2', {}, 'Recent IPv6 leases') : null,
+      d.recentLeases6.length ? recentLeases6(d.recentLeases6, load) : null,
       h('h2', {}, 'Pool utilization'),
-      h('div', { class: 'panel pad' }, d.subnets.length
-        ? d.subnets.map(s => meterRow(s.subnet, s.assigned, s.total, s.percent, '#/subnets'))
+      h('div', { class: 'panel pad' }, d.subnets.length || d.subnets6.length
+        ? [...d.subnets.map(s => meterRow(s.subnet, s.assigned, s.total, s.percent, '#/subnets')),
+          ...d.subnets6.map(s => meterRow(s.subnet, s.assigned, bigCount(s.total), s.percent, '#/subnets?v=6'))]
         : h('div', { class: 'empty' }, d.server.reachable ? 'No subnets' : 'No data')),
     ].filter(Boolean));
   };
@@ -314,6 +345,23 @@ function recentLeases(leases, reload) {
   return h('div', {}, notice, table.el);
 }
 
+function recentLeases6(leases, reload) {
+  const notice = h('div');
+  const columns = lease6Columns();
+  columns.splice(4, 0, {
+    key: 'started', label: 'Last contact', class: 'mono', sort: r => -new Date(r.started).getTime(),
+    render: r => h('span', { title: fmtTime(r.started) }, fmtAge(r.started)),
+  });
+  const table = dataTable({ columns, plain: true, empty: 'No IPv6 leases', actions: lease6Actions(reload, notice) });
+  table.setRows(leases);
+  return h('div', {}, notice, table.el);
+}
+
+// IPv6 pools can hold more addresses than a number keeps exactly; those stay text.
+function bigCount(text) {
+  return Number.isSafeInteger(Number(text)) ? Number(text) : text;
+}
+
 function tile(label, value, sub, href) {
   return h(href ? 'a' : 'div', { class: 'tile', href }, h('div', { class: 'label' }, label), h('div', { class: 'value' }, value),
     sub ? h('div', { class: 'sub' }, sub) : null);
@@ -329,16 +377,17 @@ function meterRow(name, assigned, total, percent, href) {
     h('div', { class: 'num' }, percent == null ? 'no statistics' : `${fmtCount(assigned)} / ${fmtCount(total)} · ${percent.toFixed(0)} %`));
 }
 
-const leaseStateKind = { active: 'ok', expired: 'neutral', released: 'neutral', declined: 'warn' };
+const leaseStateKind = { active: 'ok', expired: 'neutral', released: 'neutral', declined: 'warn', registered: 'ok' };
 
+/** @returns {Column[]} */
 function leaseColumns() {
   return [
       { key: 'ipAddress', label: 'IP', class: 'mono', sort: r => ipKey(r.ipAddress), search: r => r.ipAddress, render: r => clientLink(r.ipAddress) },
       { key: 'hwAddress', label: 'MAC', class: 'mono', search: r => `${r.hwAddress} ${r.vendor || ''}`, render: r => macCell(r.hwAddress, r.vendor) },
-      { key: 'clientId', label: 'Client-ID', class: 'mono clip', search: r => r.clientId, render: r => r.clientId ? h('span', { title: r.clientId }, r.clientId) : '–' },
+      { key: 'clientId', label: 'Client-ID', class: 'mono clip', search: r => r.clientId, render: r => clientIdCell(r.clientId, r.hwAddress) },
       {
         key: 'hostname', label: 'Hostname', search: r => r.hostname,
-        render: r => [r.hostname || '–', r.new ? ' ' : null, r.new ? h('span', { class: 'tag', title: 'First seen on the network within the last day' }, 'new') : null],
+        render: r => [shownName(r.hostname), r.new ? ' ' : null, r.new ? h('span', { class: 'tag', title: 'First seen on the network within the last day' }, 'new') : null],
       },
       {
         key: 'reservation', label: 'Reservation', class: 'mono wrap', sort: r => r.reservation?.ipAddress ? ipKey(r.reservation.ipAddress) : -1,
@@ -375,6 +424,7 @@ function leaseActions(reload, notice) {
 }
 
 pages.leases = params => {
+  if (showV6(params)) return leases6Page(params);
   const notice = h('div');
   const table = dataTable({
     params,
@@ -405,9 +455,30 @@ pages.leases = params => {
       notice.replaceChildren(errorNote(err));
     }
   };
-  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Leases'), refreshControls(load)), notice, table.el);
+  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Leases'), familySwitch('leases', false), refreshControls(load)), notice, table.el);
   load();
 };
+
+// A client-id of type 1 is only the MAC again; one of type 255 holds the DUID the
+// client also uses for IPv6 (RFC 4361).
+function clientIdCell(id, mac) {
+  if (!id) return '–';
+  const value = h('span', { class: 'value', title: id }, id);
+  if (mac && id.toLowerCase() === `01:${mac.toLowerCase()}`) return [h('span', { class: 'tag', title: 'Type 1: the MAC of the client' }, 'MAC'), ' ', value];
+  if (id.toLowerCase().startsWith('ff:')) return [h('span', { class: 'tag', title: 'Type 255: IAID and DUID, as the client uses for IPv6' }, 'DUID'), ' ', value];
+  return value;
+}
+
+// shownName drops the dot a client puts at the end of its FQDN.
+function shownName(name) {
+  return (name || '').replace(/\.$/, '') || '–';
+}
+
+// suggestedName turns the name a client sent into one for a reservation. A client that
+// sends its FQDN ends it with a dot, which nobody types when looking a device up.
+function suggestedName(name) {
+  return (name || '').trim().replace(/[^a-zA-Z0-9_.-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
+}
 
 // Opens the create dialog prefilled from a lease. Everything stays editable, so
 // the client can be given a different address than the one it holds now.
@@ -418,7 +489,7 @@ async function reserveLease(lease, reload) {
     identifierType: lease.hwAddress ? 'hw-address' : 'client-id',
     identifier: lease.hwAddress || lease.clientId,
     ipAddress: lease.ipAddress,
-    hostname: lease.hostname.trim().replace(/[^a-zA-Z0-9_.-]+/g, '-').replace(/^-+|-+$/g, ''),
+    hostname: suggestedName(lease.hostname),
   });
 }
 
@@ -454,8 +525,9 @@ function reservationCell(row) {
     return [h('span', { class: 'state crit', title: r.conflict }, 'MAC mismatch'), ' ',
       h('a', { href: searchLink('reservations', r.identifier), title: r.conflict }, r.hostname || r.identifier)];
   }
-  const label = r.ipAddress === row.ipAddress ? 'reserved' : `reserved: ${r.ipAddress || r.identifier}`;
-  return [h('a', { href: searchLink('reservations', r.identifier) }, label), classTags(r.classes)];
+  // the name of the reservation, which the client does not necessarily send itself
+  const other = r.ipAddress === row.ipAddress ? null : h('span', { class: 'muted' }, ` → ${r.ipAddress || r.identifier}`);
+  return [h('a', { class: 'reservation-link', href: searchLink('reservations', r.identifier), title: `Reservation of ${r.identifier}` }, r.hostname || 'reserved'), other, classTags(r.classes)];
 }
 
 // Where a client is connected. full adds the signal to the cell.
@@ -492,11 +564,18 @@ function field(label, control) {
   return h('div', { class: 'field' }, h('label', {}, label, control));
 }
 
+// Each row of an editable list knows how to read its inputs.
+const rowReaders = new WeakMap();
+
+function readRows(list) {
+  return [...list.children].map(row => rowReaders.get(row)());
+}
+
 function optionRow(list, opt) {
   const name = h('input', { class: 'mono-input', placeholder: 'Name, e.g. ntp-servers', 'aria-label': 'Option name', value: opt.name || '', disabled: !opt.name && !!opt.code });
   const data = h('input', { class: 'mono-input', placeholder: 'Value', 'aria-label': 'Option value', value: opt.data || '' });
   const row = h('div', { class: 'option-row' }, name, data, h('button', { type: 'button', class: 'small', onclick: () => row.remove() }, '×'));
-  row.read = () => ({ name: name.value.trim(), code: opt.code || 0, data: data.value });
+  rowReaders.set(row, () => ({ name: name.value.trim(), code: opt.code || 0, data: data.value }));
   list.append(row);
 }
 
@@ -528,7 +607,7 @@ async function reservationDialog(subnets, existing, reload, defaultGlobal, prefi
     hostname: hostname.value.trim(),
     comment: comment.value.trim(),
     classes: classes.filter(c => c.checked).map(c => c.dataset.name),
-    options: [...options.children].map(row => row.read()),
+    options: readRows(options),
   });
   const body = () => {
     const input = collect();
@@ -586,6 +665,7 @@ async function reservationDialog(subnets, existing, reload, defaultGlobal, prefi
     },
   },
     h('h2', {}, editing ? 'Edit reservation' : 'Create reservation'),
+    otherFamilyNote(existing?.ipv6 && ipv6Summary(existing.ipv6), `#/reservations?v=6&q=${encodeURIComponent(existing?.identifier ?? '')}`),
     h('div', { class: 'field-row' }, field('Subnet', subnet), field('Identifier type', idType)),
     field('Identifier', identifier),
     h('div', { class: 'field-row' }, field('IP address', ip), field('Hostname', hostname)),
@@ -602,9 +682,12 @@ async function reservationDialog(subnets, existing, reload, defaultGlobal, prefi
 }
 
 pages.reservations = params => {
+  if (showV6(params)) return reservations6Page(params);
   const notice = h('div');
   let subnets = [];
   let allGlobal = false;
+  // usable once the subnets are known, or the dialog would offer none
+  const create = h('button', { class: 'primary', disabled: true, onclick: () => reservationDialog(subnets, null, load, allGlobal) }, 'New reservation');
   const table = dataTable({
     params,
     search: 'Search IP, MAC, vendor, hostname or comment',
@@ -650,6 +733,7 @@ pages.reservations = params => {
     try {
       const [list, net] = await Promise.all([api('GET', 'reservations'), api('GET', 'subnets')]);
       subnets = net.subnets;
+      create.disabled = false;
       table.setRows(list.reservations);
       allGlobal = list.reservations.length > 0 && list.reservations.every(r => r.global);
       notice.replaceChildren(...[notes(list.warnings)].filter(Boolean));
@@ -657,8 +741,8 @@ pages.reservations = params => {
       notice.replaceChildren(errorNote(err));
     }
   };
-  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Reservations'),
-    meta.writable ? h('button', { class: 'primary', onclick: () => reservationDialog(subnets, null, load, allGlobal) }, 'New reservation') : null,
+  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Reservations'), familySwitch('reservations', false),
+    meta.writable ? create : null,
     h('button', { onclick: load }, 'Refresh')), notice, table.el);
   load();
 };
@@ -688,7 +772,7 @@ pages.devices = params => {
     initialSort: 'lastSeen',
     rowClass: r => (seenState(r).key === 'stale' ? 'stale' : ''),
     filters: [{
-      key: 'reserved', label: 'With and without reservation', default: 'unreserved',
+      key: 'reserved', label: 'All', default: 'unreserved',
       options: () => [{ value: 'unreserved', label: 'Unreserved only' }, { value: 'reserved', label: 'Reserved only' }],
       // a conflict needs attention, so it never hides behind a reservation
       match: (r, v) => (r.reservation && !r.reservation.conflict ? 'reserved' : 'unreserved') === v,
@@ -747,7 +831,381 @@ pages.devices = params => {
   load();
 };
 
-pages.subnets = () => {
+// IPv6 is an addition to the IPv4 pages: a switch in their head, and only with a
+// kea-dhcp6 configured.
+function showV6(params) {
+  return meta.dhcp6 && params?.get('v') === '6';
+}
+
+function familySwitch(page, v6) {
+  if (!meta.dhcp6) return null;
+  return h('div', { class: 'family-switch', role: 'group', 'aria-label': 'Address family' },
+    h('a', { href: `#/${page}`, class: v6 ? '' : 'active', 'aria-current': v6 ? null : 'page' }, 'IPv4'),
+    h('a', { href: `#/${page}?v=6`, class: v6 ? 'active' : '', 'aria-current': v6 ? 'page' : null }, 'IPv6'));
+}
+
+// The IPv4 reservation of the same MAC, which names an IPv6 client.
+function deviceCell(device) {
+  if (!device) return '–';
+  return h('a', { href: searchLink('reservations', device.ipAddress), title: 'IPv4 reservation of the same MAC' },
+    device.hostname || device.ipAddress, ' ', h('span', { class: 'muted mono' }, device.ipAddress));
+}
+
+function duidCell(duid) {
+  return duid ? h('span', { class: 'value', title: duid }, duid) : '–';
+}
+
+/** @returns {Column[]} */
+function lease6Columns() {
+  return [
+    {
+      key: 'address', label: 'Address', class: 'mono', sort: r => ip6Key(r.address), search: r => r.address,
+      render: r => r.prefix ? [client6Link(r.address, `${r.address}/${r.prefixLen}`), ' ', h('span', { class: 'tag', title: 'Delegated prefix' }, 'prefix')] : client6Link(r.address),
+    },
+    { key: 'duid', label: 'DUID', class: 'mono clip', search: r => r.duid, render: r => duidCell(r.duid) },
+    {
+      key: 'hwAddress', label: 'MAC', class: 'mono', search: r => `${r.hwAddress || ''} ${r.vendor || ''}`,
+      render: r => r.macSource ? h('span', { title: { duid: 'Read from the DUID', dhcpv4: 'From the IPv4 lease with the same DUID' }[r.macSource] }, macCell(r.hwAddress, r.vendor)) : macCell(r.hwAddress, r.vendor),
+    },
+    { key: 'hostname', label: 'Hostname', search: r => r.hostname, render: r => shownName(r.hostname) },
+    {
+      key: 'device', label: 'IPv4 device', search: r => `${r.device?.hostname ?? ''} ${r.device?.ipAddress ?? ''}`,
+      sort: r => r.device ? ipKey(r.device.ipAddress) : -1, render: r => deviceCell(r.device),
+    },
+    {
+      key: 'reserved', label: 'Reservation', sort: r => r.reserved != null ? 1 : 0,
+      render: r => r.reserved != null
+        ? h('a', { class: 'reservation-link', href: `#/reservations?v=6&q=${encodeURIComponent(r.address)}`, title: `Reservation of ${r.duid}` }, r.reserved || 'reserved')
+        : '–',
+    },
+    { key: 'subnet', label: 'Subnet', class: 'mono', render: r => r.subnet || String(r.subnetId) },
+    {
+      key: 'state', label: 'Status',
+      render: r => r.state === 'registered'
+        ? h('span', { title: 'The client chose this address itself (SLAAC) and reported it to Kea' }, state('ok', r.state))
+        : state(leaseStateKind[r.state] || 'warn', r.state),
+    },
+    { key: 'expires', label: 'Expires', class: 'mono', render: r => h('span', { title: fmtTime(r.expires) }, fmtShort(r.expires)) },
+    { key: 'remaining', label: 'Remaining', class: 'mono', render: r => fmtDuration(r.remaining) },
+  ];
+}
+
+function lease6Actions(reload, notice) {
+  if (!meta.writable) return [];
+  const reserve = r => r.reserved != null || r.prefix || !r.duid || r.state === 'registered' ? null : h('button', {
+    class: 'small',
+    title: 'Create a reservation from this lease',
+    onclick: async () => {
+      try {
+        const net = await api('GET', 'dhcp6/subnets');
+        reservation6Dialog(net.subnets, null, reload, {
+          subnetId: r.subnetId, identifierType: 'duid', identifier: r.duid, addresses: [r.address],
+          hostname: suggestedName(r.hostname || r.device?.hostname),
+        });
+      } catch (err) {
+        notice.replaceChildren(errorNote(err));
+      }
+    },
+  }, 'Reserve');
+  const remove = r => h('button', {
+    class: 'small danger',
+    onclick: () => confirmDialog('Delete lease', `Really delete lease ${r.address}${r.prefix ? '/' + r.prefixLen : ''} (${r.hostname || r.duid})?`, 'Delete', async () => {
+      await api('DELETE', `dhcp6/leases/${encodeURIComponent(r.address)}${r.prefix ? '?type=prefix' : ''}`);
+      closeDialog();
+      reload();
+    }),
+  }, 'Delete');
+  return [reserve, remove];
+}
+
+function leases6Page(params) {
+  const notice = h('div');
+  const table = dataTable({
+    params,
+    search: 'Search address, DUID, MAC, vendor or hostname',
+    empty: 'No IPv6 leases',
+    initialSort: 'address',
+    filters: [
+      {
+        key: 'state', label: 'All states',
+        options: () => [{ value: 'active', label: 'Active only' }, { value: 'inactive', label: 'Expired only' }],
+        match: (r, v) => r.active === (v === 'active'),
+      },
+      {
+        key: 'type', label: 'All',
+        options: () => [{ value: 'address', label: 'Addresses only' }, { value: 'prefix', label: 'Prefixes only' }],
+        match: (r, v) => r.prefix === (v === 'prefix'),
+      },
+    ],
+    columns: lease6Columns(),
+    actions: lease6Actions(() => load(), notice),
+  });
+  const load = async () => {
+    try {
+      const list = await api('GET', 'dhcp6/leases');
+      table.setRows(list.leases);
+      notice.replaceChildren(...[notes(list.warnings)].filter(Boolean));
+    } catch (err) {
+      notice.replaceChildren(errorNote(err));
+    }
+  };
+  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Leases'), familySwitch('leases', true), refreshControls(load)), notice, table.el);
+  load();
+}
+
+// The same device on the other address family, as a hint above a reservation form.
+function otherFamilyNote(text, href) {
+  if (!text) return null;
+  return h('div', { class: 'note other-family' }, text, ' ', h('a', { href, onclick: closeDialog }, 'Show'));
+}
+
+function ipv6Summary(ref) {
+  const parts = [];
+  if (ref.reserved.length) parts.push(`reserved ${ref.reserved.join(', ')}`);
+  if (ref.leased.length) parts.push(`active ${ref.leased.join(', ')}`);
+  return parts.length ? `IPv6 of this MAC: ${parts.join('; ')}` : '';
+}
+
+// Create or edit an IPv6 reservation. Subnet and identifier name it and stay fixed
+// when editing; prefill comes from a lease.
+function reservation6Dialog(subnets, existing, reload, prefill = {}) {
+  const r = existing || prefill;
+  const subnet = h('select', { disabled: !!existing, 'aria-label': 'Subnet' },
+    subnets.map(s => h('option', { value: String(s.id) }, `${s.subnet} (subnet ${s.id})`)));
+  if (r.subnetId) subnet.value = String(r.subnetId);
+  const idType = h('select', { disabled: !!existing }, h('option', { value: 'duid' }, 'DUID'), h('option', { value: 'hw-address' }, 'MAC address'));
+  idType.value = r.identifierType || 'duid';
+  const identifier = h('input', { class: 'mono-input', required: true, disabled: !!existing, value: r.identifier || '', placeholder: '00:04:… or 00:00:0c:…' });
+  const addresses = h('input', { class: 'mono-input', value: (r.addresses || []).join(', '), placeholder: 'fd00:db8:1::10 or ::10' });
+  const prefixes = h('input', { class: 'mono-input', value: (r.prefixes || []).join(', '), placeholder: 'fd00:db8:2:100::/56' });
+  const hostname = h('input', { class: 'mono-input', value: r.hostname || '', placeholder: 'printer' });
+  const comment = h('input', { value: r.comment || '' });
+  const error = h('div');
+  const save = h('button', { class: 'primary', type: 'submit' }, existing ? 'Save' : 'Create');
+  const collect = () => ({
+    subnetId: Number(subnet.value), identifierType: idType.value, identifier: identifier.value.trim(),
+    addresses: addresses.value.split(/[\s,]+/).filter(a => a && a !== base), prefixes: prefixes.value.split(/[\s,]+/).filter(Boolean),
+    hostname: hostname.value.trim(), comment: comment.value.trim(),
+  });
+  // where the pools are, and whether the address lies in one, while it is entered
+  const pools = h('div', { class: 'field-note muted' });
+  const hints = h('div', { class: 'notes' });
+  // a new reservation starts with the prefix of its subnet, so only the end is
+  // typed; "::20" is completed the same way when it is saved
+  let base = '';
+  const showPools = () => {
+    const s = subnets.find(x => String(x.id) === subnet.value);
+    pools.replaceChildren(s?.pools.length ? `Pools: ${s.pools.map(p => p.pool).join(', ')}. Addresses outside of them stay free for reservations.` : '');
+    const next = s && s.subnet.split('/')[0].endsWith('::') ? s.subnet.split('/')[0] : '';
+    if (!existing && (addresses.value === '' || addresses.value === base)) addresses.value = next;
+    base = next;
+  };
+  let hintTimer, hintRun = 0;
+  const showHints = async () => {
+    const run = ++hintRun;
+    let notices = [];
+    if (addresses.value.trim() && addresses.value.trim() !== base) {
+      try {
+        const check = await api('POST', 'dhcp6/reservations/check', collect());
+        notices = check.warnings.map(text => h('div', { class: 'note warn hint' }, text,
+          check.suggestion ? [' ', h('button', {
+            type: 'button', class: 'small',
+            onclick: () => { addresses.value = check.suggestion; showHints(); },
+          }, `Use ${check.suggestion}`)] : null));
+      } catch {
+        // an unfinished form has nothing to say yet
+      }
+    }
+    if (run === hintRun) hints.replaceChildren(...notices);
+  };
+  const later = () => {
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(showHints, 300);
+  };
+  addresses.addEventListener('input', later);
+  subnet.addEventListener('change', () => { showPools(); later(); });
+  showPools();
+  showHints();
+  showDialog(h('form', {
+    onsubmit: async event => {
+      event.preventDefault();
+      save.disabled = true;
+      error.replaceChildren();
+      const body = collect();
+      const path = existing
+        ? `dhcp6/reservations/${existing.subnetId}/${encodeURIComponent(existing.identifierType)}/${encodeURIComponent(existing.identifier)}`
+        : 'dhcp6/reservations';
+      try {
+        showResult(await api(existing ? 'PUT' : 'POST', path, body), reload);
+      } catch (err) {
+        error.replaceChildren(h('div', { class: 'notes' }, (err.problems || [err.message]).map(p => h('div', { class: 'note crit' }, p))));
+        save.disabled = false;
+      }
+    },
+  },
+    h('h2', {}, existing ? 'Edit IPv6 reservation' : 'New IPv6 reservation'),
+    otherFamilyNote(r.device && `IPv4: ${r.device.hostname || '–'} ${r.device.ipAddress}`, r.device && searchLink('reservations', r.device.ipAddress)),
+    field('Subnet', subnet),
+    h('div', { class: 'field-row' }, field('Identified by', idType), field('Identifier', identifier)),
+    h('div', { class: 'field' }, h('label', {}, 'Addresses, separated by commas', addresses), pools),
+    hints,
+    field('Delegated prefixes, for a router', prefixes),
+    field('DNS name', hostname),
+    field('Comment', comment),
+    error,
+    h('div', { class: 'dialog-actions' }, h('button', { type: 'button', onclick: closeDialog }, 'Cancel'), save)));
+}
+
+function reservations6Page(params) {
+  const notice = h('div');
+  const table = dataTable({
+    params,
+    search: 'Search address, DUID, MAC, vendor or hostname',
+    empty: 'No IPv6 reservations',
+    initialSort: 'addresses',
+    columns: [
+      {
+        key: 'addresses', label: 'Addresses', class: 'mono wrap', sort: r => ip6Key(r.addresses[0]),
+        search: r => [...r.addresses, ...r.prefixes, ...r.leased].join(' '),
+        render: r => r.addresses.length || r.prefixes.length ? [...r.addresses.flatMap((a, i) => [i ? ', ' : '', client6Link(a)]), ...r.prefixes.map(p => ', ' + p)] : '–',
+      },
+      {
+        key: 'identifier', label: 'Identifier', class: 'mono clip', search: r => `${r.identifier} ${r.hwAddress || ''} ${r.vendor || ''}`,
+        render: r => r.identifierType === 'hw-address' ? macCell(r.identifier, r.vendor) : [h('span', { class: 'tag' }, r.identifierType), ' ', duidCell(r.identifier)],
+      },
+      { key: 'hostname', label: 'DNS name', search: r => `${r.hostname} ${r.comment || ''}`, render: r => r.hostname || '–' },
+      {
+        key: 'device', label: 'IPv4 device', search: r => `${r.device?.hostname ?? ''} ${r.device?.ipAddress ?? ''}`,
+        sort: r => r.device ? ipKey(r.device.ipAddress) : -1, render: r => deviceCell(r.device),
+      },
+      {
+        key: 'leased', label: 'Lease', sort: r => r.leased.length,
+        render: r => r.leased.length ? h('a', { href: `#/leases?v=6&q=${encodeURIComponent(r.identifier)}` }, state('ok', r.leased.join(', '))) : '–',
+      },
+      { key: 'subnet', label: 'Subnet', class: 'mono', render: r => r.subnet || (r.subnetId ? String(r.subnetId) : 'global') },
+    ],
+    actions: meta.writable ? [
+      r => h('button', { class: 'small', onclick: () => reservation6Dialog(subnets, r, load) }, 'Edit'),
+      r => h('button', {
+        class: 'small danger',
+        onclick: () => confirmDialog('Delete reservation', `Really delete the reservation of ${r.hostname || r.identifier}?`, 'Delete', async () =>
+          showResult(await api('DELETE', `dhcp6/reservations/${r.subnetId}/${encodeURIComponent(r.identifierType)}/${encodeURIComponent(r.identifier)}`), load)),
+      }, 'Delete'),
+    ] : [],
+  });
+  let subnets = [];
+  const create6 = h('button', { class: 'primary', disabled: true, onclick: () => reservation6Dialog(subnets, null, load) }, 'New reservation');
+  const load = async () => {
+    try {
+      const [list, net] = await Promise.all([api('GET', 'dhcp6/reservations'), api('GET', 'dhcp6/subnets')]);
+      subnets = net.subnets;
+      create6.disabled = false;
+      table.setRows(list.reservations);
+      notice.replaceChildren(...[notes(list.warnings)].filter(Boolean));
+    } catch (err) {
+      notice.replaceChildren(errorNote(err));
+    }
+  };
+  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Reservations'), familySwitch('reservations', true),
+    meta.writable ? create6 : null,
+    h('button', { onclick: load }, 'Refresh')), notice, table.el);
+  load();
+}
+
+// usedList names the used addresses of one square.
+function usedList(used) {
+  return h('ul', { class: 'free-ranges' }, used.map(u => h('li', {},
+    u.address.includes('/') ? h('span', { class: 'mono' }, u.address) : client6Link(u.address),
+    u.name ? ` ${u.name}` : '', ' ', h('span', { class: 'legend' }, h('span', { class: `addr ${u.state}` }), ADDRESS_STATES[u.state]))));
+}
+
+// subnet6Map draws the pools of an IPv6 subnet. An address pool is far too large
+// for a square per address, so a square stands for an equal share of it; a prefix
+// pool gets a square per prefix it hands out.
+function subnet6Map(m) {
+  const detail = h('div', { class: 'addr-detail' });
+  let active = null;
+  const show = (button, title, used) => {
+    active?.classList.remove('active');
+    if (active === button) {
+      active = null;
+      detail.replaceChildren();
+      return;
+    }
+    active = button;
+    button.classList.add('active');
+    detail.replaceChildren(h('div', { class: 'addr-detail-head' }, h('h3', {}, title)),
+      used.length ? usedList(used) : h('p', { class: 'muted' }, 'Nothing used here'));
+  };
+  const square = (stateName, title, onclick) => {
+    const button = h('button', { type: 'button', class: `addr ${stateName}`, title, 'aria-label': title });
+    button.addEventListener('click', () => onclick(button));
+    return button;
+  };
+  const legend = h('div', { class: 'legend-row' }, ['reserved', 'leased', 'free'].map(kind =>
+    h('span', { class: 'legend' }, h('span', { class: `addr ${kind}` }), ADDRESS_STATES[kind])));
+  const parts = [
+    ...m.pools.map(p => h('div', { class: 'map6' },
+      h('h3', {}, `Pool ${p.pool}`, ' ', h('span', { class: 'muted' }, `${fmtCount(p.used)} used of ${fmtCount(bigCount(p.size))} · a square holds ${fmtCount(bigCount(p.each))}`)),
+      h('div', { class: 'addr-grid dense' }, p.blocks.map(b => {
+        const title = `${b.first} – ${b.last}: ${b.used.length ? `${b.used.length} used` : 'free'}`;
+        return square(b.state, title, button => show(button, `${b.first} – ${b.last}`, b.used));
+      })))),
+    ...m.pdPools.map(p => h('div', { class: 'map6' },
+      h('h3', {}, `Prefix pool ${p.pool}`, ' ', h('span', { class: 'muted' }, p.tooLarge ? `${fmtCount(p.used)} used` : `${fmtCount(p.used)} of ${fmtCount(p.count)} prefixes used`)),
+      p.prefixes.length ? h('div', { class: 'addr-grid dense' }, p.prefixes.map(c => {
+        const title = [c.address, ADDRESS_STATES[c.state], c.name].filter(Boolean).join(' · ');
+        return square(c.state, title, button => show(button, c.address, c.state === 'free' ? [] : [c]));
+      })) : h('p', { class: 'muted' }, 'Too many prefixes to draw, and none used.'))),
+    m.outside.length ? h('div', { class: 'map6' }, h('h3', {}, 'Outside of the pools'), usedList(m.outside)) : null,
+  ].filter(Boolean);
+  if (!parts.length) return null;
+  return h('div', { class: 'panel pad map6-panel' }, legend, ...parts, detail);
+}
+
+function subnet6Card(s, editable, reload) {
+  const dl = (key, value) => [h('dt', {}, key), h('dd', {}, value)];
+  const list = v => v && v.length ? v.join(', ') : '–';
+  return h('div', {},
+    h('h2', {}, `Subnet ${s.id}`, meta.writable && editable && !s.sharedNetwork
+      ? h('button', { class: 'small subnet-edit', onclick: () => subnetDialog(s, reload, true) }, 'Edit') : null),
+    h('div', { class: 'panel pad' },
+      h('div', { class: 'columns' },
+        h('dl', { class: 'kv' },
+          dl('Prefix', s.subnet),
+          dl('Subnet ID', String(s.id)),
+          s.sharedNetwork ? dl('Shared Network', s.sharedNetwork) : null,
+          s.interface ? dl('Interface', s.interface) : null,
+          dl('DNS', list(s.dnsServers)),
+          dl('Valid lifetime', s.validLifetime != null ? fmtDuration(s.validLifetime) : '–'),
+          dl('Preferred lifetime', s.preferredLifetime != null ? fmtDuration(s.preferredLifetime) : '–'),
+          dl('Active leases', h('a', { href: `#/leases?v=6&q=${encodeURIComponent(s.subnet)}` }, fmtCount(s.leases))),
+          s.pdPools.length ? dl('Delegated prefixes', fmtCount(s.delegated)) : null,
+          dl('Reservations', h('a', { href: '#/reservations?v=6' }, fmtCount(s.reservations))),
+          s.options.filter(o => o.name !== 'dns-servers').map(o => dl(o.name || `Option ${o.code}`, o.data || '–'))),
+        h('dl', { class: 'kv' },
+          s.pools.length ? s.pools.map(p => dl('Pool', [p.pool, ' ', h('span', { class: 'muted' }, `${BigInt(p.size).toLocaleString(DATE_LOCALE)} addresses`)])) : dl('Pools', 'none'),
+          s.pdPools.map(p => dl('Prefix pool', `${p.prefix}/${p.prefixLen}, each /${p.delegatedLen}`))))),
+    s.map ? subnet6Map(s.map) : null);
+}
+
+function subnets6Page() {
+  const body = h('div', {});
+  const load = async () => {
+    try {
+      const list = await api('GET', 'dhcp6/subnets');
+      body.replaceChildren(...[notes(list.warnings), ...list.subnets.map(s => subnet6Card(s, list.editable, load))].filter(Boolean));
+      if (!list.subnets.length) body.append(h('div', { class: 'panel empty' }, 'No IPv6 subnets configured'));
+    } catch (err) {
+      body.replaceChildren(errorNote(err));
+    }
+  };
+  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Subnets'), familySwitch('subnets', true), h('button', { onclick: load }, 'Refresh')), body);
+  load();
+}
+
+pages.subnets = params => {
+  if (showV6(params)) return subnets6Page();
   const body = h('div', {});
   const load = async () => {
     try {
@@ -758,7 +1216,7 @@ pages.subnets = () => {
       body.replaceChildren(errorNote(err));
     }
   };
-  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Subnets'), h('button', { onclick: load }, 'Refresh')), body);
+  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Subnets'), familySwitch('subnets', false), h('button', { onclick: load }, 'Refresh')), body);
   load();
 };
 
@@ -773,7 +1231,7 @@ function classDialog(existing, reload) {
       ev.preventDefault();
       save.disabled = true;
       error.replaceChildren();
-      const body = { name: name.value.trim(), options: [...options.children].map(row => row.read()) };
+      const body = { name: name.value.trim(), options: readRows(options) };
       try {
         showResult(existing
           ? await api('PUT', 'classes/' + encodeURIComponent(existing.name), body)
@@ -839,29 +1297,54 @@ function splitList(text) {
   return text.split(',').map(v => v.trim()).filter(Boolean);
 }
 
-function poolRow(list, value) {
-  const input = h('input', { class: 'mono-input', placeholder: '192.0.2.100-192.0.2.199', 'aria-label': 'Pool', value });
-  const row = h('div', { class: 'pool-row' }, input, h('button', { type: 'button', class: 'small', onclick: () => row.remove() }, '×'));
-  row.read = () => input.value.trim();
+// pdPoolRow edits one prefix pool: the prefix it splits and the length it hands out.
+function pdPoolRow(list, p) {
+  const prefix = h('input', { class: 'mono-input', placeholder: 'fd00:db8:2::/48', 'aria-label': 'Prefix', value: p ? `${p.prefix}/${p.prefixLen}` : '' });
+  const delegated = h('input', { class: 'mono-input', type: 'number', min: '1', max: '128', placeholder: '56', 'aria-label': 'Delegated length', value: p?.delegatedLen ?? '' });
+  const row = h('div', { class: 'pool-row pd-row' }, prefix, h('span', { class: 'muted' }, 'each /'), delegated,
+    h('button', { type: 'button', class: 'small', onclick: () => row.remove() }, '×'));
+  rowReaders.set(row, () => {
+    const [address, length] = prefix.value.trim().split('/');
+    return address ? { prefix: address, prefixLen: Number(length), delegatedLen: Number(delegated.value) } : null;
+  });
   list.append(row);
 }
 
-function subnetDialog(s, reload) {
+function poolRow(list, value, v6) {
+  const input = h('input', { class: 'mono-input', placeholder: v6 ? 'fd00:db8:1::1000-fd00:db8:1::ffff' : '192.0.2.100-192.0.2.199', 'aria-label': 'Pool', value });
+  const row = h('div', { class: 'pool-row' }, input, h('button', { type: 'button', class: 'small', onclick: () => row.remove() }, '×'));
+  rowReaders.set(row, () => input.value.trim());
+  list.append(row);
+}
+
+// subnetDialog edits a subnet of kea-dhcp4 or, with v6, of kea-dhcp6. IPv6 has no
+// gateway option, but a preferred lifetime.
+function subnetDialog(s, reload, v6 = false) {
+  const base = v6 ? 'dhcp6/subnets/' : 'subnets/';
   const pools = h('div', {});
-  s.pools.forEach(p => poolRow(pools, p.pool));
+  s.pools.forEach(p => poolRow(pools, p.pool, v6));
   const gateways = h('input', { class: 'mono-input', value: (s.gateways || []).join(', ') });
   const dns = h('input', { class: 'mono-input', value: (s.dnsServers || []).join(', ') });
   const lifetime = h('input', { class: 'mono-input', type: 'number', min: '1', value: s.validLifetime ?? '' });
+  const preferred = h('input', { class: 'mono-input', type: 'number', min: '1', value: s.preferredLifetime ?? '' });
+  const pdPools = h('div', {});
+  (s.pdPools || []).forEach(p => pdPoolRow(pdPools, p));
   const error = h('div');
   const save = h('button', { class: 'primary', type: 'submit' }, 'Save');
   const show = list => error.replaceChildren(h('div', { class: 'notes' }, list.map(p => h('div', { class: 'note crit' }, p))));
-  const input = () => ({
-    pools: [...pools.children].map(row => row.read()).filter(Boolean),
+  const input = () => v6 ? {
+    pools: readRows(pools).filter(Boolean),
+    dnsServers: splitList(dns.value),
+    validLifetime: Number(lifetime.value),
+    preferredLifetime: Number(preferred.value),
+    pdPools: readRows(pdPools).filter(Boolean),
+  } : {
+    pools: readRows(pools).filter(Boolean),
     gateways: splitList(gateways.value),
     dnsServers: splitList(dns.value),
     validLifetime: Number(lifetime.value),
-  });
-  const apply = async body => showResult(await api('PUT', 'subnets/' + s.id, body), reload);
+  };
+  const apply = async body => showResult(await api('PUT', base + s.id, body), reload);
   const form = h('form', {
     onsubmit: async ev => {
       ev.preventDefault();
@@ -869,7 +1352,7 @@ function subnetDialog(s, reload) {
       error.replaceChildren();
       const body = input();
       try {
-        const check = await api('POST', `subnets/${s.id}/check`, body);
+        const check = await api('POST', `${base}${s.id}/check`, body);
         if (!check.warnings.length) {
           await apply(body);
           return;
@@ -888,10 +1371,13 @@ function subnetDialog(s, reload) {
   },
     h('h2', {}, `Edit subnet ${s.subnet}`),
     h('div', { class: 'field' }, h('label', {}, 'Pools'), pools,
-      h('div', {}, h('button', { type: 'button', class: 'small', onclick: () => poolRow(pools, '') }, 'Add pool'))),
-    field('Gateway', gateways),
+      h('div', {}, h('button', { type: 'button', class: 'small', onclick: () => poolRow(pools, '', v6) }, 'Add pool'))),
+    v6 ? h('div', { class: 'field' }, h('label', {}, 'Prefix pools, for routers'), pdPools,
+      h('div', {}, h('button', { type: 'button', class: 'small', onclick: () => pdPoolRow(pdPools) }, 'Add prefix pool'))) : null,
+    v6 ? null : field('Gateway', gateways),
     field('DNS servers', dns),
-    field('Lease lifetime (seconds)', lifetime),
+    field(v6 ? 'Valid lifetime (seconds)' : 'Lease lifetime (seconds)', lifetime),
+    v6 ? field('Preferred lifetime (seconds)', preferred) : null,
     error,
     h('div', { class: 'dialog-actions' }, h('button', { type: 'button', onclick: closeDialog }, 'Cancel'), save));
   showDialog(form);
@@ -972,7 +1458,7 @@ function addressMap(s) {
     const openBlock = async b => {
       // a slower answer must not replace the block clicked after it
       shown = b.first;
-      for (const tile of el.querySelectorAll('.addr-block')) tile.classList.toggle('active', tile.dataset.first === b.first);
+      for (const block of el.querySelectorAll('.addr-block')) block.classList.toggle('active', block.getAttribute('data-first') === b.first);
       detail.replaceChildren(h('p', { class: 'muted' }, 'Loading…'));
       try {
         const zoomed = await api('GET', `subnets/${s.id}/map?block=${encodeURIComponent(b.first)}`);
@@ -985,8 +1471,8 @@ function addressMap(s) {
       }
     };
     const suffix = m.incomplete ? ' (incomplete)' : '';
-    const legend = ['reserved', 'leased', 'device', 'gateway', 'free'].map(state => h('span', { class: 'legend' },
-      h('span', { class: `addr ${state}` }), `${ADDRESS_STATES[state]}: ${fmtCount(m.counts[state] || 0)}`));
+    const legend = ['reserved', 'leased', 'device', 'gateway', 'free'].map(kind => h('span', { class: 'legend' },
+      h('span', { class: `addr ${kind}` }), `${ADDRESS_STATES[kind]}: ${fmtCount(m.counts[kind] || 0)}`));
     el.replaceChildren(...[
       h('h3', {}, 'Addresses'),
       notes(m.warnings.map(message => ({ severity: 'warn', message }))),
@@ -1016,9 +1502,10 @@ const HA_ACTIONS = {
   continue: { label: 'Continue', text: s => `Resumes the HA state machine of ${s.ha.name} if it is paused.` },
 };
 
-function haButtons(s, reload) {
+// base is servers for kea-dhcp4 and dhcp6/servers for kea-dhcp6.
+function haButtons(s, reload, base) {
   if (!s.ha || !meta.writable) return null;
-  const path = action => `servers/${encodeURIComponent(s.name)}/ha/${action}`;
+  const path = action => `${base}/${encodeURIComponent(s.name)}/ha/${action}`;
   return h('div', { class: 'ha-actions' }, s.ha.actions.map(a => h('button', {
     onclick: () => confirmDialog(HA_ACTIONS[a].label + ': ' + s.name, HA_ACTIONS[a].text(s), HA_ACTIONS[a].label,
       async () => showResult(await api('POST', path(a)), reload)),
@@ -1032,11 +1519,11 @@ const HA_STATE_KIND = {
 };
 
 // haLink holds what belongs to the pair rather than to one server, as the primary sees it.
-function haLink(ha) {
+function haLink(ha, family) {
   const { local, remote } = ha['ha-servers'];
   const yes = (flag, bad) => flag === bad ? state('crit', flag ? 'yes' : 'no') : state('ok', flag ? 'yes' : 'no');
   return h('div', { class: 'panel pad ha-link' },
-    h('h3', {}, 'HA connection ', h('span', { class: 'tag' }, ha['ha-mode'])),
+    h('h3', {}, 'HA connection ', h('span', { class: 'tag' }, ha['ha-mode']), familyTag(family)),
     h('dl', { class: 'facts' }, [
       ['Scopes', (local.scopes || []).join(', ') || '–'],
       remote && ['In touch', yes(remote['in-touch'], false)],
@@ -1097,20 +1584,57 @@ pages.audit = () => {
   load();
 };
 
+// The IPv4 page takes the rows and the HA connection from the dashboard; for
+// IPv6 one answer brings all of it.
+async function serverPageData(v6) {
+  if (v6) {
+    const d = await api('GET', 'dhcp6/servers');
+    return { servers: d.servers, rows: d.rows, ha: d.ha, warnings: d.haWarnings, reachable: d.servers[0]?.reachable };
+  }
+  const [d, { servers }] = await Promise.all([api('GET', 'dashboard'), api('GET', 'servers')]);
+  updateChip(d.server);
+  return {
+    servers, rows: d.servers, ha: d.ha, reachable: d.server.reachable,
+    warnings: d.server.reachable ? d.haWarnings : d.warnings,
+    single: { uptime: d.server.uptime, activeLeases: d.activeLeases },
+  };
+}
+
+// The family of a card only shows when the columns stack on a narrow screen.
+function familyTag(family) {
+  return family ? h('span', { class: 'tag family-tag' }, family) : null;
+}
+
+function haCell(p, family) {
+  if (p.ha.length) return haLink(p.ha[0], family);
+  return p.reachable ? h('p', { class: 'muted' }, 'No HA: the hook libdhcp_ha is not loaded.') : h('div');
+}
+
+function serverCards(p, base, reload, family) {
+  const several = p.servers.length > 1;
+  return new Map(p.servers.map(s => [s.name, serverCard(s, p.rows.find(r => r.name === s.name) ?? p.single, several, reload, base, family)]));
+}
+
+// With kea-dhcp6, the page is a grid: one row for the HA connections and one per
+// server, so that both families of a server stand at the same height.
 pages.servers = () => {
   const body = h('div');
   const load = async () => {
     try {
-      const [d, { servers }] = await Promise.all([api('GET', 'dashboard'), api('GET', 'servers')]);
-      updateChip(d.server);
-      const several = servers.length > 1;
-      body.replaceChildren(...[
-        notes(d.server.reachable ? d.haWarnings : d.warnings),
-        several ? h('p', { class: 'muted' }, 'Changes run on the primary first, then on each peer. Reservations, classes and subnets are compared.') : null,
-        d.ha.length ? haLink(d.ha[0]) : null,
-        !d.ha.length && d.server.reachable ? h('p', { class: 'muted' }, 'No HA: the hook libdhcp_ha is not loaded.') : null,
-        h('div', { class: 'columns server-list' }, servers.map(s => serverCard(s, d.servers.find(r => r.name === s.name) ?? { uptime: d.server.uptime, activeLeases: d.activeLeases }, several, load))),
-      ].filter(Boolean));
+      const [v4, v6] = await Promise.all([serverPageData(false), meta.dhcp6 ? serverPageData(true).catch(err => err) : null]);
+      const v6ok = v6 && !(v6 instanceof Error);
+      const cards4 = serverCards(v4, 'servers', load, v6 ? 'DHCPv4' : null);
+      if (!v6) {
+        body.replaceChildren(...[notes(v4.warnings), haCell(v4), h('div', { class: 'columns server-list' }, [...cards4.values()])].filter(Boolean));
+        return;
+      }
+      const warnings = [...v4.warnings, ...(v6ok ? v6.warnings.map(w => ({ ...w, message: 'DHCPv6: ' + w.message })) : [])];
+      const cards6 = v6ok ? serverCards(v6, 'dhcp6/servers', load, 'DHCPv6') : new Map();
+      const names = [...new Set([...cards4.keys(), ...cards6.keys()])];
+      body.replaceChildren(...[notes(warnings), h('div', { class: 'family-grid' },
+        h('h2', {}, 'DHCPv4'), h('h2', {}, 'DHCPv6'),
+        haCell(v4, 'DHCPv4'), v6ok ? haCell(v6, 'DHCPv6') : errorNote(v6),
+        names.flatMap(name => [cards4.get(name) ?? h('div'), cards6.get(name) ?? h('div')]))].filter(Boolean));
     } catch (err) {
       body.replaceChildren(errorNote(err));
     }
@@ -1125,7 +1649,10 @@ function serverOverview(rows) {
   const table = dataTable({
     plain: true,
     columns: [
-      { key: 'name', label: 'Server', class: 'mono', render: r => h('a', { href: '#/servers' }, r.name) },
+      {
+        key: 'name', label: 'Server', class: 'mono',
+        render: r => [h('a', { href: '#/servers' }, r.name), r.ipv6 ? h('span', { class: 'tag' }, 'IPv6') : null],
+      },
       { key: 'role', label: 'Role' },
       { key: 'haState', label: 'State', render: r => r.reachable ? state(r.severity, r.haState || 'running') : state('crit', 'unreachable') },
       { key: 'version', label: 'Version', class: 'mono' },
@@ -1150,12 +1677,12 @@ function serverState(s) {
 }
 
 // serverCard joins the comparison of a server with its row of the dashboard.
-function serverCard(s, row, several, reload) {
+function serverCard(s, row, several, reload, base, family) {
   const syncable = s.differences.filter(d => !d.manual);
   const removed = syncable.filter(d => d.change === 'extra').length;
   const changeText = { missing: 'missing here', extra: 'only here', different: 'different' };
   return h('div', { class: 'panel pad server-card' },
-    h('h3', {}, s.name),
+    h('h3', {}, s.name, familyTag(family)),
     kvRows([
       ['State', s.reachable ? state('ok', 'reachable') : state('crit', 'unreachable')],
       several && ['Role', s.role],
@@ -1167,7 +1694,7 @@ function serverCard(s, row, several, reload) {
       several && ['Configuration', serverState(s)],
     ]),
     s.error ? h('div', { class: 'note crit' }, s.error) : null,
-    haButtons(s, reload),
+    haButtons(s, reload, base),
     s.differences.length ? h('ul', { class: 'steps' }, s.differences.map(d => h('li', {},
       state(d.change === 'extra' ? 'crit' : 'warn', changeText[d.change]),
       h('span', { class: 'detail' }, `${d.kind} ${d.target}${d.manual ? ' (fix in the configuration file)' : ''}`)))) : null,
@@ -1175,7 +1702,7 @@ function serverCard(s, row, several, reload) {
       class: 'primary',
       onclick: () => confirmDialog('Copy from primary',
         `Make ${s.name} match the primary? ${syncable.length} entries change${removed ? `, ${removed} of them are deleted on ${s.name}` : ''}.`, 'Copy',
-        async () => showResult(await api('POST', 'servers/' + encodeURIComponent(s.name) + '/sync'), reload)),
+        async () => showResult(await api('POST', `${base}/${encodeURIComponent(s.name)}/sync`), reload)),
     }, 'Copy from primary') : null);
 }
 
@@ -1277,6 +1804,67 @@ function clientBody(c) {
   ];
 }
 
+// client6Link opens the IPv6 popup of an address.
+function client6Link(address, label) {
+  return h('a', { href: '#', class: 'client-link', title: 'Show details', onclick: event => { event.preventDefault(); client6Dialog(address); } }, label ?? address);
+}
+
+async function client6Dialog(address) {
+  showDialog(closeButton(), h('h2', {}, address), h('p', { class: 'muted' }, 'Loading…'));
+  dialog.classList.add('wide');
+  const opened = dialogGeneration;
+  const current = () => opened === dialogGeneration && dialog.open;
+  try {
+    const c = await api('GET', 'dhcp6/clients/' + encodeURIComponent(address));
+    if (!current()) return;
+    showDialog(...client6Body(c).filter(Boolean));
+    dialogGeneration = opened;
+    dialog.classList.add('wide');
+  } catch (err) {
+    if (current()) showDialog(closeButton(), h('h2', {}, address), errorNote(err));
+  }
+}
+
+function client6Body(c) {
+  const l = c.lease;
+  const r = c.reservation;
+  const device = l?.device || r?.device;
+  return [
+    closeButton(),
+    h('h2', {}, c.name || c.address),
+    h('p', { class: 'client-sub' }, [c.address, l?.duid || (r?.identifierType === 'duid' ? r.identifier : ''), l?.hwAddress || r?.hwAddress].filter(Boolean).join(' · ')),
+    notes(c.warnings.map(message => ({ severity: 'warn', message }))),
+    h('div', { class: 'client-grid' },
+      clientCard('Lease', l && [
+        ['Address', l.prefix ? `${l.address}/${l.prefixLen}` : l.address],
+        ['State', state(leaseStateKind[l.state] || 'warn', l.state)],
+        ['Contact', fmtShort(l.started)],
+        ['Remaining', fmtDuration(l.remaining)],
+      ], 'No lease'),
+      clientCard('Reservation', r && [
+        ['Addresses', r.addresses.length ? r.addresses.join(', ') : '–'],
+        r.prefixes.length ? ['Prefixes', r.prefixes.join(', ')] : null,
+        ['Hostname', r.hostname || '–'],
+        ['By', `${r.identifierType} ${r.identifier}`],
+        r.comment ? ['Comment', r.comment] : null,
+      ], 'No reservation'),
+      clientCard('IPv4 device', device && [
+        ['Name', device.hostname || '–'],
+        ['Address', clientLink(device.ipAddress)],
+      ], 'Unknown')),
+    h('h3', {}, 'Why it has this address'),
+    explainSteps(c.explanation.steps),
+    c.explanation.unknown.length ? h('div', { class: 'notes' }, h('div', { class: 'note' }, c.explanation.unknown.join(' '))) : null,
+    h('h3', {}, 'Options it receives'),
+    optionTable(c.explanation.options),
+    c.history.length ? h('h3', {}, 'Changes') : null,
+    c.history.length ? h('ul', { class: 'history' }, c.history.map(a => h('li', {},
+      h('span', { class: 'mono' }, fmtShort(a.time)), ' ',
+      state({ ok: 'ok', failed: 'crit', partial: 'warn' }[a.status] || 'neutral', a.action), ' ',
+      h('span', { class: 'muted' }, a.user)))) : null,
+  ];
+}
+
 async function clientDialog(id) {
   showDialog(closeButton(), h('h2', {}, id), h('p', { class: 'muted' }, 'Loading…'));
   dialog.classList.add('wide');
@@ -1319,6 +1907,7 @@ function checkPanel(title, checks) {
 function findingLink(f) {
   if (f.page === 'client') return clientLink(f.query, f.target);
   if (!f.page) return f.target;
+  if (f.ipv6) return h('a', { href: `#/${f.page}?v=6${f.query ? '&q=' + encodeURIComponent(f.query) : ''}` }, f.target);
   return h('a', { href: f.query ? searchLink(f.page, f.query) : '#/' + f.page }, f.target);
 }
 
@@ -1377,7 +1966,7 @@ pages.health = () => {
         key: 'severity', label: 'Level', sort: r => ['crit', 'warn', 'info'].indexOf(r.severity),
         render: r => state(SEVERITY_KIND[r.severity], severityWord(r.severity)),
       },
-      { key: 'area', label: 'Area', search: r => r.area },
+      { key: 'area', label: 'Area', search: r => r.ipv6 ? `${r.area} IPv6` : r.area, render: r => r.ipv6 ? [r.area, ' ', h('span', { class: 'tag' }, 'IPv6')] : r.area },
       { key: 'target', label: 'Entry', class: 'mono', search: r => r.target, render: findingLink },
       { key: 'message', label: 'Finding', class: 'wrap', search: r => r.message },
     ],
@@ -1459,14 +2048,14 @@ async function route() {
   const [name, query] = location.hash.replace('#/', '').split('?');
   // own properties only: a link to #/constructor must not reach what objects inherit
   const page = Object.hasOwn(pages, name) ? name : 'dashboard';
-  for (const a of document.querySelectorAll('nav a')) a.classList.toggle('active', a.dataset.page === page);
+  for (const a of document.querySelectorAll('nav a')) a.classList.toggle('active', a.getAttribute('data-page') === page);
   await loadClassOptions();
   pages[page](new URLSearchParams(query));
 }
 
 function themeControls() {
   const bind = (id, key, value) => {
-    const select = document.getElementById(id);
+    const select = /** @type {HTMLSelectElement} */ (document.getElementById(id));
     select.value = value;
     select.addEventListener('change', () => {
       localStorage.setItem(key, select.value);
@@ -1478,7 +2067,7 @@ function themeControls() {
 }
 
 function authBox(title, intro, form, error) {
-  document.querySelector('header.top nav').hidden = true;
+  /** @type {HTMLElement} */ (document.querySelector('header.top nav')).hidden = true;
   view.replaceChildren(h('div', { class: 'auth-box panel pad' },
     h('h1', {}, title), intro ? h('p', { class: 'muted' }, intro) : null, error, form));
   form.querySelector('input')?.focus();
@@ -1731,7 +2320,9 @@ async function start() {
   ].map(group => group.filter(Boolean)).filter(group => group.length);
   document.getElementById('nav').replaceChildren(...groups.map(group => h('div', { class: 'nav-group' },
     group.map(([page, label]) => h('a', { href: '#/' + page, 'data-page': page }, label)))));
-  document.querySelector('.brand').title = 'Kea Roost ' + meta.version;
+  /** @type {HTMLElement} */ (document.querySelector('.brand')).title = 'Kea Roost ' + meta.version;
+  document.getElementById('about').replaceChildren('Kea Roost ', h('span', { class: 'mono' }, meta.version || 'dev'), ' · ',
+    h('a', { href: 'https://github.com/vgropp/kea-roost', target: '_blank', rel: 'noopener noreferrer' }, 'GitHub'), ' · MIT License');
   document.getElementById('server-chip').replaceChildren();
   document.getElementById('account').replaceChildren(h('button', { class: 'small account-button', title: 'Password, 2FA, log out', onclick: accountDialog },
     meta.user, meta.writable ? null : h('span', { class: 'tag' }, 'viewer')));

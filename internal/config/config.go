@@ -20,7 +20,9 @@ var peerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 // Config holds all settings.
 type Config struct {
 	KeaURL         string
+	Kea6URL        string
 	Peers          []Peer
+	Peers6         []Peer
 	HostsDir       string
 	TrustedProxies []netip.Prefix
 	HostsDomains   []string
@@ -89,8 +91,17 @@ func Load(getenv func(string) string) (*Config, error) {
 	if !isHTTPURL(c.KeaURL) {
 		return nil, fmt.Errorf("KEA_URL %q is not an http(s) URL", c.KeaURL)
 	}
-	if c.Peers, err = parsePeers(getenv("KEA_PEERS"), c.ServerName); err != nil {
+	if c.Kea6URL = getenv("KEA6_URL"); c.Kea6URL != "" && !isHTTPURL(c.Kea6URL) {
+		return nil, fmt.Errorf("KEA6_URL %q is not an http(s) URL", c.Kea6URL)
+	}
+	if c.Peers, err = parsePeers("KEA_PEERS", getenv("KEA_PEERS"), c.ServerName); err != nil {
 		return nil, err
+	}
+	if c.Peers6, err = parsePeers("KEA6_PEERS", getenv("KEA6_PEERS"), c.ServerName); err != nil {
+		return nil, err
+	}
+	if len(c.Peers6) > 0 && c.Kea6URL == "" {
+		return nil, errors.New("KEA6_PEERS needs KEA6_URL for the primary kea-dhcp6")
 	}
 	for _, item := range strings.Split(getenv("MANAGER_TRUSTED_PROXIES"), ",") {
 		if item = strings.TrimSpace(item); item == "" {
@@ -146,7 +157,7 @@ func Load(getenv func(string) string) (*Config, error) {
 }
 
 // parsePeers reads a list like "standby=http://192.0.2.2:8051,other=http://...".
-func parsePeers(text, primary string) ([]Peer, error) {
+func parsePeers(setting, text, primary string) ([]Peer, error) {
 	var peers []Peer
 	seen := map[string]bool{primary: true}
 	for _, item := range strings.Split(text, ",") {
@@ -155,10 +166,10 @@ func parsePeers(text, primary string) ([]Peer, error) {
 		}
 		name, address, ok := strings.Cut(item, "=")
 		if !ok || !peerName.MatchString(name) || !isHTTPURL(address) {
-			return nil, fmt.Errorf("KEA_PEERS entry %q is not name=http(s)-URL", item)
+			return nil, fmt.Errorf("%s entry %q is not name=http(s)-URL", setting, item)
 		}
 		if seen[name] {
-			return nil, fmt.Errorf("KEA_PEERS uses the name %q twice, KEA_SERVER_NAME counts as well", name)
+			return nil, fmt.Errorf("%s uses the name %q twice, KEA_SERVER_NAME counts as well", setting, name)
 		}
 		seen[name] = true
 		peers = append(peers, Peer{name, address})
