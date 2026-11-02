@@ -15,8 +15,9 @@ Then:
 To work on the interface without a real server, run it against the test double:
 
     go run ./cmd/fake-kea -listen 127.0.0.1:8000 &
-    KEA_URL=http://127.0.0.1:8000 MANAGER_USER=admin MANAGER_PASSWORD=admin \
-      MANAGER_DATA_DIR=./data go run ./cmd/kea-roost
+    KEA_URL=http://127.0.0.1:8000 MANAGER_DATA_DIR=./data go run ./cmd/kea-roost
+
+The first start prints a setup code for the first account, see [Accounts](accounts.md).
 
 To also run the browser tests, which need a local Chromium or Chrome:
 

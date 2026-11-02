@@ -30,6 +30,8 @@ lease into a static DHCP reservation in two clicks.
 - **Leases and reservations:** search, filters, MAC vendors, change the MAC, classes and DHCP
   options, and a reservation from a lease in two clicks.
 - **Client classes and subnets:** edit classes, pools, gateway, DNS servers and lease lifetime.
+- **[Accounts](docs/accounts.md):** several users as admin or viewer, a login form,
+  optional 2FA with TOTP, and setup of the first admin.
 - **[Address map](docs/address-map.md):** every address at a glance, and the free ranges.
 - **[Several Kea servers and HA](docs/several-servers.md):** every change reaches all servers,
   differences show up, and HA can be operated: maintenance, sync, reset.
@@ -65,9 +67,14 @@ as `ghcr.io/vgropp/kea-roost`:
     curl -L -o .env https://raw.githubusercontent.com/vgropp/kea-roost/main/.env.example
 
 In `compose.yaml`, uncomment the `image` line and delete the `build` and `image` lines
-below it. Set `KEA_URL` and the passwords in `.env`, then start it:
+below it. Set `KEA_URL` and the Kea password in `.env`, then start it:
 
     docker compose up -d
+
+The first start prints a setup code to the log. Open the interface and create the first
+admin with it:
+
+    docker compose logs kea-roost | grep "setup code"
 
 `latest` follows the newest release. To stay on one, set `KEA_ROOST_VERSION=0.8` for a
 release line or `KEA_ROOST_VERSION=0.8.0` for exactly one version in `.env`.
@@ -97,6 +104,7 @@ hosts can block project networks from reaching local services.
 | Page | Content |
 |---|---|
 | [Configuration](docs/configuration.md) | Environment, Settings page, reverse proxy, MAC vendors, themes |
+| [Accounts](docs/accounts.md) | First admin, roles, 2FA, failed logins, lost passwords |
 | [Kea configuration](docs/kea-configuration.md) | What Kea needs: control socket and hooks |
 | [Several servers and HA](docs/several-servers.md) | Peers, comparing, operating HA |
 | [Address map](docs/address-map.md) | Free ranges and how they are found |

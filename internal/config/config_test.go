@@ -16,7 +16,7 @@ func TestDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Listen != ":8080" || c.WriteEnabled() {
+	if c.Listen != ":8080" {
 		t.Fatalf("got %+v", c)
 	}
 }
@@ -26,12 +26,10 @@ func TestInvalid(t *testing.T) {
 		"no url":        {},
 		"metrics user":  {"KEA_URL": "http://kea", "METRICS_USER": "a"},
 		"metrics flag":  {"KEA_URL": "http://kea", "METRICS_ENABLED": "maybe"},
-		"example pass":  {"KEA_URL": "http://kea", "MANAGER_USER": "a", "MANAGER_PASSWORD": "change-me"},
 		"bad scheme":    {"KEA_URL": "ftp://kea"},
-		"user only":     {"KEA_URL": "http://kea", "MANAGER_USER": "a"},
 		"cert only":     {"KEA_URL": "http://kea", "KEA_CLIENT_CERT": "a"},
 		"both secret":   {"KEA_URL": "http://kea", "KEA_PASSWORD": "a", "KEA_PASSWORD_FILE": "b"},
-		"no file":       {"KEA_URL": "http://kea", "MANAGER_PASSWORD_FILE": "/does/not/exist"},
+		"no file":       {"KEA_URL": "http://kea", "KEA_PASSWORD_FILE": "/does/not/exist"},
 		"bad monitor":   {"KEA_URL": "http://kea", "ARPMONITOR_URL": "host:8253"},
 		"bad dashboard": {"KEA_URL": "http://kea", "APDASHBOARD_URL": "host:8189"},
 		"bad base":      {"KEA_URL": "http://kea", "MANAGER_BASE_PATH": "kea-roost"},
@@ -59,12 +57,19 @@ func TestSecretFile(t *testing.T) {
 	if err := os.WriteFile(file, []byte("hunter2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c, err := Load(env(map[string]string{"KEA_URL": "https://kea", "MANAGER_USER": "a", "MANAGER_PASSWORD_FILE": file}))
+	c, err := Load(env(map[string]string{"KEA_URL": "https://kea", "KEA_USER": "a", "KEA_PASSWORD_FILE": file}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(c.Password, "\n") || c.Password != "hunter2" || !c.WriteEnabled() {
-		t.Fatalf("got %q", c.Password)
+	if strings.Contains(c.KeaPassword, "\n") || c.KeaPassword != "hunter2" {
+		t.Fatalf("got %q", c.KeaPassword)
+	}
+}
+
+func TestObsoleteSettingsAreNamed(t *testing.T) {
+	got := Obsolete(env(map[string]string{"MANAGER_USER": "a", "MANAGER_PASSWORD": "b", "KEA_URL": "http://kea"}))
+	if strings.Join(got, ",") != "MANAGER_USER,MANAGER_PASSWORD" {
+		t.Fatalf("got %v", got)
 	}
 }
 
@@ -104,5 +109,15 @@ func TestMetricsCanBeTurnedOff(t *testing.T) {
 	c, err = Load(env(map[string]string{"KEA_URL": "http://kea", "METRICS_ENABLED": "false"}))
 	if err != nil || !c.MetricsOff {
 		t.Fatalf("%+v %v", c, err)
+	}
+}
+
+func TestTrustedProxies(t *testing.T) {
+	c, err := Load(env(map[string]string{"KEA_URL": "http://kea", "MANAGER_TRUSTED_PROXIES": "192.0.2.1, 198.51.100.0/24"}))
+	if err != nil || len(c.TrustedProxies) != 2 || c.TrustedProxies[0].String() != "192.0.2.1/32" || c.TrustedProxies[1].String() != "198.51.100.0/24" {
+		t.Fatalf("%v %v", c.TrustedProxies, err)
+	}
+	if _, err := Load(env(map[string]string{"KEA_URL": "http://kea", "MANAGER_TRUSTED_PROXIES": "proxy"})); err == nil {
+		t.Fatal("a name was accepted")
 	}
 }

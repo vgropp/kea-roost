@@ -14,9 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 
+	"github.com/vgropp/kea-roost/internal/auth"
 	"github.com/vgropp/kea-roost/internal/kea"
 	"github.com/vgropp/kea-roost/internal/keatest"
 	"github.com/vgropp/kea-roost/internal/manager"
@@ -61,6 +63,13 @@ func seed(fake *keatest.Server) {
 }
 
 func start(t *testing.T) *browser {
+	t.Helper()
+	return startWith(t, login, true)
+}
+
+// startWith opens a browser on a server with these accounts, logged in as the admin
+// or not at all.
+func startWith(t *testing.T, accounts web.Auth, loggedIn bool) *browser {
 	t.Helper()
 	fake := keatest.New()
 	seed(fake)
@@ -110,13 +119,10 @@ func start(t *testing.T) *browser {
 	}))
 	t.Cleanup(dashboard.Close)
 	mgr.SetAPDashboard(dashboard.URL)
-	handler := web.New(mgr, login, "")
-	// logs every browser request in, there is no way to answer the login prompt
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.SetBasicAuth(login.User, login.Password)
-		handler.ServeHTTP(w, r)
-	}))
+	handler := web.New(mgr, testAuth(t, accounts), "")
+	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
+	// every page starts logged in; the login form has tests of its own
 
 	// The password store flag keeps Chromium from waiting for a locked keyring.
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(),
@@ -133,6 +139,12 @@ func start(t *testing.T) *browser {
 	b := &browser{t: t, ctx: ctx, url: srv.URL, fake: fake}
 	if err := chromedp.Do(ctx, chromedp.Navigate("about:blank")); err != nil {
 		t.Fatal(err)
+	}
+	if loggedIn {
+		session := sessionFor(t, srv.URL, "admin", adminPassword)
+		if _, err := chromedp.Call(ctx, network.SetCookie, network.SetCookieParams{Name: session.Name, Value: session.Value, URL: srv.URL}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	go func() {
 		for e, err := range chromedp.Events(ctx, runtime.ExceptionThrown) {
@@ -712,7 +724,8 @@ func TestSettingsPageSaves(t *testing.T) {
 	b.exec(`document.querySelector('input[name="reviewDays"]').value = '90'; document.querySelector('main form, form').requestSubmit()`)
 	b.poll(`document.body.textContent.includes('Settings saved.')`)
 	b.poll(`document.querySelector('input[name="reviewDays"]').value === '90' && document.body.textContent.includes('changed')`)
-	if got := b.text(`document.body.textContent`); strings.Contains(strings.ToLower(got), "password") {
+	// the user list below may speak of passwords, the settings themselves must not
+	if got := b.text(`document.querySelector('main form').textContent`); strings.Contains(strings.ToLower(got), "password") {
 		t.Errorf("no secrets belong here: %s", got)
 	}
 }
@@ -749,7 +762,8 @@ func TestAuditLogHasPagesAndFilters(t *testing.T) {
 	}
 	b.exec(`[...document.querySelectorAll('.pager button')].find(x => x.textContent === 'Next').click()`)
 	b.poll(`document.querySelector('.pager').textContent.includes('Page 2 of 2')`)
-	if got := evaluate[int](b, rows); got != 6 {
+	// 56 changes and the login of the test
+	if got := evaluate[int](b, rows); got != 7 {
 		t.Fatalf("second page: %d rows", got)
 	}
 	b.exec(`const s = document.querySelector('select[aria-label="All actions"]'); s.value = 'settings-update'; s.dispatchEvent(new Event('change'))`)
@@ -806,4 +820,71 @@ func TestInheritedNamesAreNoPages(t *testing.T) {
 		b.do(chromedp.Navigate(b.url + "/#/" + page))
 		b.poll(`document.querySelector('h1')?.textContent === 'Dashboard'`)
 	}
+}
+
+func fill(b *browser, selector, value string) {
+	b.t.Helper()
+	b.exec(fmt.Sprintf(`document.querySelector(%q).value = %q`, selector, value))
+}
+
+func TestLoginPage(t *testing.T) {
+	b := startWith(t, login, false)
+	b.do(chromedp.Navigate(b.url + "/"))
+	b.poll(`document.querySelector('h1')?.textContent === 'Log in'`)
+	if evaluate[bool](b, `!document.querySelector('nav').hidden`) {
+		t.Error("the navigation shows before the login")
+	}
+	fill(b, `input[name="username"]`, "admin")
+	fill(b, `input[name="password"]`, "wrong passphrase")
+	b.exec(`document.querySelector('form').requestSubmit()`)
+	b.poll(`document.body.textContent.includes('wrong user name or password')`)
+	fill(b, `input[name="password"]`, adminPassword)
+	b.exec(`document.querySelector('form').requestSubmit()`)
+	b.poll(`document.querySelector('h1')?.textContent === 'Dashboard'`)
+	b.poll(`document.querySelector('.account-button')?.textContent.includes('admin')`)
+	b.exec(`document.querySelector('.account-button').click()`)
+	b.poll(`[...document.querySelectorAll('dialog button')].some(x => x.textContent === 'Log out')`)
+	b.exec(`[...document.querySelectorAll('dialog button')].find(x => x.textContent === 'Log out').click()`)
+	b.poll(`document.querySelector('h1')?.textContent === 'Log in'`)
+}
+
+func TestOnboardingPage(t *testing.T) {
+	b := startWith(t, web.Auth{SetupCode: "code from the log"}, false)
+	b.do(chromedp.Navigate(b.url + "/"))
+	b.poll(`document.querySelector('h1')?.textContent === 'Welcome to Kea Roost'`)
+	fill(b, `input[name="code"]`, "code from the log")
+	fill(b, `input[name="username"]`, "owner")
+	b.exec(`for (const p of document.querySelectorAll('input[type="password"]')) p.value = 'owner passphrase'`)
+	b.exec(`document.querySelector('form').requestSubmit()`)
+	b.poll(`document.querySelector('h1')?.textContent === 'Dashboard'`)
+	b.poll(`document.querySelector('.account-button')?.textContent.includes('owner')`)
+	b.poll(`[...document.querySelectorAll('nav a')].some(a => a.textContent === 'Settings')`)
+}
+
+func TestUsersPage(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/settings"))
+	b.poll(`document.querySelectorAll('#users tbody tr').length === 2`)
+	b.exec(`[...document.querySelectorAll('button')].find(x => x.textContent === 'New user').click()`)
+	b.poll(`document.querySelector('dialog form') !== null`)
+	b.exec(`const f = document.querySelector('dialog form'); f.querySelector('input').value = 'helper';
+		f.querySelector('input[type="password"]').value = 'helper passphrase'; f.requestSubmit()`)
+	b.poll(`document.querySelectorAll('#users tbody tr').length === 3`)
+}
+
+func TestSecondFactorSetupInTheBrowser(t *testing.T) {
+	b := start(t)
+	b.open("dashboard", "Dashboard")
+	b.exec(`document.querySelector('.account-button').click()`)
+	b.poll(`document.querySelector('dialog input.switch') !== null`)
+	b.exec(`document.querySelector('dialog input.switch').click()`)
+	b.poll(`document.querySelector('.totp-qr')?.complete && document.querySelector('.totp-qr').naturalWidth > 0`)
+	secret := strings.ReplaceAll(b.text(`document.querySelector('.totp-secret').textContent`), " ", "")
+	code, err := auth.TOTPAt(secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.exec(fmt.Sprintf(`const f = [...document.querySelectorAll('dialog form')].at(-1); f.querySelector('input').value = %q;
+		f.querySelector('input[type="password"]').value = %q; f.requestSubmit()`, code, adminPassword))
+	b.poll(`document.querySelector('dialog input.switch')?.checked === true && !document.querySelector('.totp-qr')`)
 }

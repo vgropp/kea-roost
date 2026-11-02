@@ -10,10 +10,13 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	auth_ "github.com/vgropp/kea-roost/internal/auth"
 	"github.com/vgropp/kea-roost/internal/kea"
 	"github.com/vgropp/kea-roost/internal/manager"
 )
@@ -26,10 +29,16 @@ const (
 	auditLimit  = 5000
 )
 
-// Auth holds the login of the manager; an empty User means read-only access.
+// Auth holds the accounts of the interface and the login of /metrics.
 type Auth struct {
-	User     string
-	Password string
+	Users *auth_.Users
+	// SetupCode lets the first visitor create the first admin, while no account exists.
+	// It is only printed to the log, so that only somebody with access to the server
+	// can claim the instance.
+	SetupCode string
+	// TrustedProxies may name the client in X-Forwarded-For. Without them every request
+	// counts with the address it comes from, which behind a proxy is the proxy.
+	TrustedProxies []netip.Prefix
 	// MetricsUser is the login of /metrics, which it opens and nothing else. The login
 	// of the interface does not work there. Without it, /metrics is open.
 	MetricsUser     string
@@ -39,20 +48,49 @@ type Auth struct {
 }
 
 type server struct {
-	mgr  *manager.Manager
-	auth Auth
+	mgr      *manager.Manager
+	auth     Auth
+	sessions *auth_.Sessions
+	limiter  *auth_.Limiter
+	totp     *totpState
 }
 
 type contextKey struct{}
 
+// account is the logged-in user of a request.
+type account struct {
+	name string
+	role auth_.Role
+}
+
 // New builds the handler of the manager. basePath is the subpath a reverse proxy
 // serves it under, if the proxy does not strip that path itself.
 func New(mgr *manager.Manager, auth Auth, basePath string) http.Handler {
-	s := &server{mgr: mgr, auth: auth}
+	s := &server{
+		mgr: mgr, auth: auth,
+		sessions: auth_.NewSessions(sessionIdle, sessionAbsolute, time.Now),
+		limiter:  auth_.NewLimiter(mgr.LoginLimits, time.Now),
+		totp:     newTOTPState(),
+	}
 	assets, _ := fs.Sub(static, "static")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/meta", s.meta)
+	mux.HandleFunc("GET /api/session", s.session)
+	mux.HandleFunc("POST /api/login", s.login)
+	mux.HandleFunc("POST /api/login/totp", s.loginTOTP)
+	mux.HandleFunc("GET /api/account", s.accountInfo)
+	mux.HandleFunc("POST /api/account/totp", s.startTOTP)
+	mux.HandleFunc("GET /api/account/totp/qr", s.totpQR)
+	mux.HandleFunc("POST /api/account/totp/confirm", s.confirmTOTP)
+	mux.HandleFunc("DELETE /api/account/totp", s.removeTOTP)
+	mux.HandleFunc("POST /api/logout", s.logout)
+	mux.HandleFunc("POST /api/setup", s.setup)
+	mux.HandleFunc("PUT /api/account/password", s.changePassword)
+	mux.HandleFunc("GET /api/users", s.writer(s.listUsers))
+	mux.HandleFunc("POST /api/users", s.writer(s.createUser))
+	mux.HandleFunc("PUT /api/users/{name}", s.writer(s.updateUser))
+	mux.HandleFunc("DELETE /api/users/{name}", s.writer(s.deleteUser))
 	mux.HandleFunc("GET /api/dashboard", s.dashboard)
 	mux.HandleFunc("GET /api/leases", s.leases)
 	mux.HandleFunc("GET /api/reservations", s.reservations)
@@ -170,26 +208,26 @@ func (s *server) metricsLogin(w http.ResponseWriter, r *http.Request) {
 	s.metrics(w, r)
 }
 
+// Paths that work without a session: the interface itself and what it needs to log in.
+var publicAPI = map[string]bool{"/api/session": true, "/api/login": true, "/api/login/totp": true, "/api/logout": true, "/api/setup": true}
+
 func (s *server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.auth.User == "" {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if !hasLogin(r, s.auth.User, s.auth.Password) {
-			w.Header().Set("WWW-Authenticate", `Basic realm="Kea Roost", charset="UTF-8"`)
+		if a, ok := s.account(r); ok {
+			r = r.WithContext(context.WithValue(r.Context(), contextKey{}, a))
+		} else if strings.HasPrefix(r.URL.Path, "/api/") && !publicAPI[r.URL.Path] {
 			writeJSON(w, http.StatusUnauthorized, errorBody{Error: "login required"})
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), contextKey{}, s.auth.User)))
+		next.ServeHTTP(w, r)
 	})
 }
 
 // writer guards everything that changes Kea or exposes configuration contents.
 func (s *server) writer(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.auth.User == "" {
-			writeJSON(w, http.StatusForbidden, errorBody{Error: "read-only mode: MANAGER_USER and MANAGER_PASSWORD are not set"})
+		if a, _ := r.Context().Value(contextKey{}).(account); a.role != auth_.RoleAdmin {
+			writeJSON(w, http.StatusForbidden, errorBody{Error: "this needs the admin role"})
 			return
 		}
 		next(w, r)
@@ -197,8 +235,8 @@ func (s *server) writer(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func user(r *http.Request) string {
-	u, _ := r.Context().Value(contextKey{}).(string)
-	return u
+	a, _ := r.Context().Value(contextKey{}).(account)
+	return a.name
 }
 
 type errorBody struct {
@@ -243,7 +281,8 @@ func writeResult(w http.ResponseWriter, res *manager.Result) {
 func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"serverName": s.mgr.ServerName(),
-		"writable":   s.auth.User != "",
+		"writable":   currentRole(r) == auth_.RoleAdmin,
+		"role":       currentRole(r),
 		"devices":    s.mgr.DevicesEnabled(),
 		"peers":      s.mgr.HasPeers(),
 		"version":    s.mgr.Version(),

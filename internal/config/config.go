@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -21,6 +22,7 @@ type Config struct {
 	KeaURL         string
 	Peers          []Peer
 	HostsDir       string
+	TrustedProxies []netip.Prefix
 	HostsDomains   []string
 	KeaUser        string
 	KeaPassword    string
@@ -29,8 +31,6 @@ type Config struct {
 	KeaClientKey   string
 	ServerName     string
 	Listen         string
-	User           string
-	Password       string
 	MetricsOff     bool
 	MetricsUser    string
 	MetricsPass    string
@@ -47,9 +47,17 @@ type Peer struct {
 	URL  string
 }
 
-// WriteEnabled reports whether a login is configured. Without one, the manager
-// stays read-only: changes must always be attributable to an authorized user.
-func (c *Config) WriteEnabled() bool { return c.User != "" && c.Password != "" }
+// Obsolete returns the settings that are set but no longer used, so that the start can
+// point them out instead of ignoring them silently.
+func Obsolete(getenv func(string) string) []string {
+	var out []string
+	for _, name := range []string{"MANAGER_USER", "MANAGER_PASSWORD", "MANAGER_PASSWORD_FILE", "ARPMONITOR_DAYS"} {
+		if getenv(name) != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
 
 // Load reads the configuration through getenv. For passwords, a NAME_FILE
 // variable can point to a file holding the value (e.g. a Docker secret).
@@ -62,7 +70,6 @@ func Load(getenv func(string) string) (*Config, error) {
 		KeaClientKey:   getenv("KEA_CLIENT_KEY"),
 		ServerName:     or(getenv("KEA_SERVER_NAME"), "kea"),
 		Listen:         or(getenv("MANAGER_LISTEN"), ":8080"),
-		User:           getenv("MANAGER_USER"),
 		MetricsUser:    getenv("METRICS_USER"),
 		DataDir:        or(getenv("MANAGER_DATA_DIR"), "/var/lib/kea-roost"),
 		ARPMonitorURL:  getenv("ARPMONITOR_URL"),
@@ -71,9 +78,6 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	var err error
 	if c.KeaPassword, err = secret(getenv, "KEA_PASSWORD"); err != nil {
-		return nil, err
-	}
-	if c.Password, err = secret(getenv, "MANAGER_PASSWORD"); err != nil {
 		return nil, err
 	}
 	if c.MetricsPass, err = secret(getenv, "METRICS_PASSWORD"); err != nil {
@@ -87,6 +91,20 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	if c.Peers, err = parsePeers(getenv("KEA_PEERS"), c.ServerName); err != nil {
 		return nil, err
+	}
+	for _, item := range strings.Split(getenv("MANAGER_TRUSTED_PROXIES"), ",") {
+		if item = strings.TrimSpace(item); item == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(item)
+		if err != nil {
+			addr, addrErr := netip.ParseAddr(item)
+			if addrErr != nil {
+				return nil, fmt.Errorf("MANAGER_TRUSTED_PROXIES holds %q, which is no address or network", item)
+			}
+			prefix = netip.PrefixFrom(addr, addr.BitLen())
+		}
+		c.TrustedProxies = append(c.TrustedProxies, prefix.Masked())
 	}
 	if c.HostsDir != "" && !strings.HasPrefix(c.HostsDir, "/") {
 		return nil, fmt.Errorf("DNS_HOSTS_DIR %q must be an absolute path", c.HostsDir)
@@ -114,9 +132,6 @@ func Load(getenv func(string) string) (*Config, error) {
 	if (c.KeaClientCert == "") != (c.KeaClientKey == "") {
 		return nil, errors.New("KEA_CLIENT_CERT and KEA_CLIENT_KEY must be set together")
 	}
-	if (c.User == "") != (c.Password == "") {
-		return nil, errors.New("MANAGER_USER and MANAGER_PASSWORD must be set together")
-	}
 	if text := getenv("METRICS_ENABLED"); text != "" {
 		enabled, err := strconv.ParseBool(text)
 		if err != nil {
@@ -126,9 +141,6 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	if (c.MetricsUser == "") != (c.MetricsPass == "") {
 		return nil, errors.New("METRICS_USER and METRICS_PASSWORD must be set together")
-	}
-	if c.Password == "change-me" {
-		return nil, errors.New("MANAGER_PASSWORD still holds the example value")
 	}
 	return c, nil
 }

@@ -27,6 +27,8 @@ type Settings struct {
 	DropWarnPercent    int `json:"dropWarnPercent"`
 	NakWarnPercent     int `json:"nakWarnPercent"`
 	MinPackets         int `json:"minPackets"`
+	LoginFailures      int `json:"loginFailures"`
+	LoginWindowMinutes int `json:"loginWindowMinutes"`
 }
 
 func defaultSettings() Settings {
@@ -34,6 +36,7 @@ func defaultSettings() Settings {
 		DevicesDays: 7, ReviewDays: 365, OnlineMinutes: 15, LeaseSilentMinutes: 60,
 		PoolWarnPercent: 80, PoolCritPercent: 95, ClockSkewSeconds: 30,
 		DropWarnPercent: 5, NakWarnPercent: 10, MinPackets: 50,
+		LoginFailures: 10, LoginWindowMinutes: 15,
 	}
 }
 
@@ -41,6 +44,13 @@ func (s Settings) online() time.Duration { return time.Duration(s.OnlineMinutes)
 
 func (s Settings) leaseSilent() time.Duration {
 	return time.Duration(s.LeaseSilentMinutes) * time.Minute
+}
+
+// LoginLimits returns the number of failed logins that block and their window. Zero
+// failures turn the limit off.
+func (m *Manager) LoginLimits() (int, time.Duration) {
+	s := m.cfg()
+	return s.LoginFailures, time.Duration(s.LoginWindowMinutes) * time.Minute
 }
 
 // SettingField describes one setting for the form.
@@ -68,6 +78,8 @@ var settingFields = []SettingField{
 	{Key: "clockSkewSeconds", Group: "Warnings", Label: "Clock skew", Help: "Warn when the HA partners differ by this much. Kea stops HA at 60 seconds.", Unit: "seconds", Min: 1, Max: 60, fieldPtr: func(s *Settings) *int { return &s.ClockSkewSeconds }},
 	{Key: "dropWarnPercent", Group: "DHCP traffic", Label: "Dropped packets", Help: "Warn when this share of the received packets is dropped.", Unit: "%", Min: 1, Max: 100, fieldPtr: func(s *Settings) *int { return &s.DropWarnPercent }},
 	{Key: "nakWarnPercent", Group: "DHCP traffic", Label: "Refused requests", Help: "Warn when this share of the answers is a NAK.", Unit: "%", Min: 1, Max: 100, fieldPtr: func(s *Settings) *int { return &s.NakWarnPercent }},
+	{Key: "loginFailures", Group: "Login", Label: "Failed logins", Help: "After this many failed logins, the address and the user name wait for the window to pass. 0 turns this off.", Unit: "logins", Min: 0, Max: 1000, fieldPtr: func(s *Settings) *int { return &s.LoginFailures }},
+	{Key: "loginWindowMinutes", Group: "Login", Label: "Login window", Help: "How long failed logins count, and how long a blocked login waits.", Unit: "minutes", Min: 1, Max: 1440, fieldPtr: func(s *Settings) *int { return &s.LoginWindowMinutes }},
 	{Key: "minPackets", Group: "DHCP traffic", Label: "Minimum packets", Help: "Shares are only rated from this many packets on.", Unit: "packets", Min: 1, Max: 1000000, fieldPtr: func(s *Settings) *int { return &s.MinPackets }},
 }
 

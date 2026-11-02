@@ -2,14 +2,19 @@ package web_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/vgropp/kea-roost/internal/auth"
 	"github.com/vgropp/kea-roost/internal/kea"
 	"github.com/vgropp/kea-roost/internal/keatest"
 	"github.com/vgropp/kea-roost/internal/manager"
@@ -18,8 +23,72 @@ import (
 
 const payload = `{"subnetId":1,"identifierType":"hw-address","identifier":"aa:bb:cc:00:00:01","ipAddress":"192.0.2.10","hostname":"nas"}`
 
-func setup(t *testing.T, auth web.Auth) (*keatest.Server, *httptest.Server) {
+const (
+	adminPassword  = "admin passphrase"
+	viewerPassword = "viewer passphrase"
+)
+
+// testAuth has an admin and a viewer account. A SetupCode leaves the accounts empty,
+// for the onboarding.
+func testAuth(t *testing.T, a web.Auth) web.Auth {
 	t.Helper()
+	if a.Users != nil {
+		return a
+	}
+	users, err := auth.LoadUsers(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.SetupCode == "" {
+		if err := users.Add("admin", auth.RoleAdmin, adminPassword, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := users.Add("viewer", auth.RoleViewer, viewerPassword, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.Users = users
+	return a
+}
+
+var (
+	cookiesMu sync.Mutex
+	cookies   = map[string]*http.Cookie{}
+)
+
+// sessionFor logs in once per server and account and returns the session cookie.
+func sessionFor(t *testing.T, base, name, password string) *http.Cookie {
+	t.Helper()
+	cookiesMu.Lock()
+	defer cookiesMu.Unlock()
+	key := base + " " + name
+	if c, ok := cookies[key]; ok {
+		return c
+	}
+	body := fmt.Sprintf(`{"name":%q,"password":%q}`, name, password)
+	res, err := http.Post(base+"/api/login", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	for _, c := range res.Cookies() {
+		if c.Name == "kea_roost_session" {
+			cookies[key] = c
+			return c
+		}
+	}
+	t.Fatalf("login as %s failed: %d", name, res.StatusCode)
+	return nil
+}
+
+func addSession(t *testing.T, base string, req *http.Request) {
+	t.Helper()
+	req.AddCookie(sessionFor(t, base, "admin", adminPassword))
+}
+
+func setup(t *testing.T, a web.Auth) (*keatest.Server, *httptest.Server) {
+	t.Helper()
+	a = testAuth(t, a)
 	fake := keatest.New()
 	keaSrv := httptest.NewServer(fake)
 	t.Cleanup(keaSrv.Close)
@@ -31,7 +100,7 @@ func setup(t *testing.T, auth web.Auth) (*keatest.Server, *httptest.Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(web.New(manager.New(client, store, "primary"), auth, ""))
+	srv := httptest.NewServer(web.New(manager.New(client, store, "primary"), a, ""))
 	t.Cleanup(srv.Close)
 	return fake, srv
 }
@@ -43,7 +112,12 @@ func do(t *testing.T, srv *httptest.Server, method, path, body string, login boo
 		t.Fatal(err)
 	}
 	if login {
-		req.SetBasicAuth("admin", "pw")
+		base := srv.URL
+		// below a subpath, the login goes there as well
+		if strings.HasPrefix(path, "/kea-roost/") {
+			base += "/kea-roost"
+		}
+		addSession(t, base, req)
 	}
 	res, err := srv.Client().Do(req)
 	if err != nil {
@@ -54,52 +128,12 @@ func do(t *testing.T, srv *httptest.Server, method, path, body string, login boo
 	return res, string(data)
 }
 
-var login = web.Auth{User: "admin", Password: "pw"}
-
-func TestReadOnlyWithoutLogin(t *testing.T) {
-	fake, srv := setup(t, web.Auth{})
-	if res, _ := do(t, srv, "GET", "/api/dashboard", "", false); res.StatusCode != 200 {
-		t.Fatalf("dashboard: %d", res.StatusCode)
-	}
-	writes := [][2]string{
-		{"POST", "/api/reservations"},
-		{"PUT", "/api/reservations/1/hw-address/aa:bb:cc:00:00:01"},
-		{"DELETE", "/api/reservations/1/hw-address/aa:bb:cc:00:00:01"},
-		{"DELETE", "/api/leases/192.0.2.1"},
-		{"POST", "/api/config/write"},
-		{"GET", "/api/backups"},
-		{"GET", "/api/audit"},
-	}
-	for _, w := range writes {
-		if res, _ := do(t, srv, w[0], w[1], payload, false); res.StatusCode != http.StatusForbidden {
-			t.Errorf("%v: %d", w, res.StatusCode)
-		}
-	}
-	if fake.HasCall("config-write") || fake.HasCall("reservation-add") {
-		t.Error("write reached Kea")
-	}
-}
-
-func TestLoginRequired(t *testing.T) {
-	_, srv := setup(t, login)
-	for _, path := range []string{"/", "/app.js", "/api/dashboard", "/api/leases"} {
-		res, _ := do(t, srv, "GET", path, "", false)
-		if res.StatusCode != http.StatusUnauthorized || res.Header.Get("WWW-Authenticate") == "" {
-			t.Errorf("%s: %d", path, res.StatusCode)
-		}
-	}
-	if res, _ := do(t, srv, "GET", "/healthz", "", false); res.StatusCode != 200 {
-		t.Errorf("healthz: %d", res.StatusCode)
-	}
-	if res, _ := do(t, srv, "GET", "/", "", true); res.StatusCode != 200 {
-		t.Errorf("login: %d", res.StatusCode)
-	}
-}
+var login = web.Auth{}
 
 func TestCrossOriginWriteRejected(t *testing.T) {
 	fake, srv := setup(t, login)
 	req, _ := http.NewRequest("POST", srv.URL+"/api/reservations", strings.NewReader(payload))
-	req.SetBasicAuth("admin", "pw")
+	addSession(t, srv.URL, req)
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	res, err := srv.Client().Do(req)
 	if err != nil {
@@ -115,7 +149,7 @@ func TestReverseProxyHostHeader(t *testing.T) {
 	_, srv := setup(t, login)
 	post := func(host string) *http.Response {
 		req, _ := http.NewRequest("POST", srv.URL+"/api/reservations", strings.NewReader(payload))
-		req.SetBasicAuth("admin", "pw")
+		addSession(t, srv.URL, req)
 		req.Host = host
 		// plain HTTP on a LAN address is not a secure context, so browsers send no Sec-Fetch-Site
 		req.Header.Set("Origin", "http://192.0.2.1")
@@ -133,7 +167,7 @@ func TestReverseProxyHostHeader(t *testing.T) {
 		t.Errorf("preserved host: %d", res.StatusCode)
 	}
 	req, _ := http.NewRequest("POST", srv.URL+"/api/reservations", strings.NewReader(`{}`))
-	req.SetBasicAuth("admin", "pw")
+	addSession(t, srv.URL, req)
 	req.Host = "127.0.0.1:8323"
 	req.Header.Set("Origin", "http://192.0.2.1")
 	req.Header.Set("X-Forwarded-Host", "192.0.2.1")
@@ -174,7 +208,7 @@ func TestSubpathBehindReverseProxy(t *testing.T) {
 			defer keaSrv.Close()
 			client, _ := kea.NewClient(kea.Options{URL: keaSrv.URL})
 			store, _ := manager.NewStore(t.TempDir())
-			backend := httptest.NewServer(web.New(manager.New(client, store, "primary"), login, c.base))
+			backend := httptest.NewServer(web.New(manager.New(client, store, "primary"), testAuth(t, login), c.base))
 			defer backend.Close()
 			proxy := subpathProxy(t, backend.URL, c.stripped)
 
@@ -199,7 +233,7 @@ func TestSubpathBehindReverseProxy(t *testing.T) {
 			}
 
 			req, _ := http.NewRequest("POST", proxy.URL+"/kea-roost/api/reservations", strings.NewReader(payload))
-			req.SetBasicAuth("admin", "pw")
+			addSession(t, proxy.URL+"/kea-roost", req)
 			req.Header.Set("Origin", proxy.URL)
 			res, err := proxy.Client().Do(req)
 			if err != nil {
@@ -216,7 +250,7 @@ func TestSubpathBehindReverseProxy(t *testing.T) {
 func TestBasePathKeepsHealthCheckAtRoot(t *testing.T) {
 	client, _ := kea.NewClient(kea.Options{URL: "http://127.0.0.1:1"})
 	store, _ := manager.NewStore(t.TempDir())
-	srv := httptest.NewServer(web.New(manager.New(client, store, "x"), web.Auth{}, "/kea-roost"))
+	srv := httptest.NewServer(web.New(manager.New(client, store, "x"), testAuth(t, web.Auth{}), "/kea-roost"))
 	defer srv.Close()
 	if res, _ := do(t, srv, "GET", "/healthz", "", false); res.StatusCode != 200 {
 		t.Errorf("healthz: %d", res.StatusCode)
@@ -250,8 +284,13 @@ func TestReservationLifecycle(t *testing.T) {
 	}
 	_, body = do(t, srv, "GET", "/api/audit", "", true)
 	var entries []manager.AuditEntry
-	if err := json.Unmarshal([]byte(body), &entries); err != nil || len(entries) != 3 {
+	if err := json.Unmarshal([]byte(body), &entries); err != nil {
 		t.Fatalf("audit: %s", body)
+	}
+	// the login is an entry of its own
+	entries = slices.DeleteFunc(entries, func(e manager.AuditEntry) bool { return e.Action == "login" })
+	if len(entries) != 3 {
+		t.Fatalf("audit: %+v", entries)
 	}
 	if entries[0].User != "admin" || entries[0].Action != "reservation-del" {
 		t.Errorf("audit: %+v", entries[0])
@@ -288,13 +327,13 @@ func TestErrorMapping(t *testing.T) {
 func TestUnreachableKea(t *testing.T) {
 	client, _ := kea.NewClient(kea.Options{URL: "http://127.0.0.1:1"})
 	store, _ := manager.NewStore(t.TempDir())
-	srv := httptest.NewServer(web.New(manager.New(client, store, "x"), web.Auth{}, ""))
+	srv := httptest.NewServer(web.New(manager.New(client, store, "x"), testAuth(t, web.Auth{}), ""))
 	defer srv.Close()
-	res, body := do(t, srv, "GET", "/api/leases", "", false)
+	res, body := do(t, srv, "GET", "/api/leases", "", true)
 	if res.StatusCode != http.StatusBadGateway || !strings.Contains(body, "unreachable") {
 		t.Errorf("leases: %d %s", res.StatusCode, body)
 	}
-	res, body = do(t, srv, "GET", "/api/dashboard", "", false)
+	res, body = do(t, srv, "GET", "/api/dashboard", "", true)
 	if res.StatusCode != 200 || !strings.Contains(body, `"reachable":false`) {
 		t.Errorf("dashboard: %d %s", res.StatusCode, body)
 	}
@@ -359,7 +398,7 @@ func TestFrontendIsAlwaysRevalidated(t *testing.T) {
 
 func TestMetaNamesTheVersion(t *testing.T) {
 	_, srv := setup(t, web.Auth{})
-	if _, body := do(t, srv, "GET", "/api/meta", "", false); !strings.Contains(body, `"version"`) {
+	if _, body := do(t, srv, "GET", "/api/meta", "", true); !strings.Contains(body, `"version"`) {
 		t.Fatalf("meta: %s", body)
 	}
 }
@@ -374,13 +413,6 @@ func TestSettingsNeedALoginToChange(t *testing.T) {
 	}
 	if res, _ := do(t, srv, "PUT", "/api/settings", `{"reviewDays":0}`, true); res.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("invalid: %d", res.StatusCode)
-	}
-}
-
-func TestSettingsAreReadOnlyWithoutLoginConfigured(t *testing.T) {
-	_, srv := setup(t, web.Auth{})
-	if res, _ := do(t, srv, "PUT", "/api/settings", `{"reviewDays":90}`, false); res.StatusCode != http.StatusForbidden {
-		t.Fatalf("got %d", res.StatusCode)
 	}
 }
 
@@ -405,7 +437,7 @@ func TestMetricsAreOpenWithoutTheirOwnLogin(t *testing.T) {
 }
 
 func TestMetricsHaveTheirOwnLogin(t *testing.T) {
-	_, srv := setup(t, web.Auth{User: "admin", Password: "pw", MetricsUser: "prometheus", MetricsPassword: "scrape"})
+	_, srv := setup(t, web.Auth{MetricsUser: "prometheus", MetricsPassword: "scrape"})
 	get := func(path, user, password string) int {
 		t.Helper()
 		req, err := http.NewRequest("GET", srv.URL+path, nil)
@@ -423,56 +455,22 @@ func TestMetricsHaveTheirOwnLogin(t *testing.T) {
 	if got := get("/metrics", "prometheus", "scrape"); got != http.StatusOK {
 		t.Errorf("metrics login: %d", got)
 	}
-	if got := get("/metrics", "admin", "pw"); got != http.StatusUnauthorized {
+	if got := get("/metrics", "admin", adminPassword); got != http.StatusUnauthorized {
 		t.Errorf("admin on metrics: %d", got)
 	}
 	if got := get("/metrics", "prometheus", "wrong"); got != http.StatusUnauthorized {
 		t.Errorf("wrong password: %d", got)
 	}
-	for _, path := range []string{"/api/dashboard", "/api/settings", "/api/backups", "/"} {
+	for _, path := range []string{"/api/dashboard", "/api/settings", "/api/backups"} {
 		if got := get(path, "prometheus", "scrape"); got != http.StatusUnauthorized {
 			t.Errorf("metrics login on %s: %d", path, got)
 		}
 	}
-	if got := get("/api/dashboard", "admin", "pw"); got != http.StatusOK {
-		t.Errorf("admin on the interface: %d", got)
-	}
 }
 
 func TestMetricsCanBeTurnedOff(t *testing.T) {
-	_, srv := setup(t, web.Auth{User: "admin", Password: "pw", MetricsOff: true})
+	_, srv := setup(t, web.Auth{MetricsOff: true})
 	if res, _ := do(t, srv, "GET", "/metrics", "", true); res.StatusCode != http.StatusNotFound {
 		t.Fatalf("got %d", res.StatusCode)
-	}
-}
-
-func TestLoginComparesWholeValues(t *testing.T) {
-	_, srv := setup(t, web.Auth{User: "admin", Password: "secret"})
-	cases := []struct {
-		user, password string
-		want           int
-	}{
-		{"admin", "secret", http.StatusOK},
-		{"admin", "secre", http.StatusUnauthorized},
-		{"admin", "secret2", http.StatusUnauthorized},
-		{"admin", "", http.StatusUnauthorized},
-		{"admin", "secret\x00", http.StatusUnauthorized},
-		{"", "", http.StatusUnauthorized},
-		{"admi", "secret", http.StatusUnauthorized},
-	}
-	for _, c := range cases {
-		req, err := http.NewRequest("GET", srv.URL+"/api/meta", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.SetBasicAuth(c.user, c.password)
-		res, err := srv.Client().Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		res.Body.Close()
-		if res.StatusCode != c.want {
-			t.Errorf("%q %q: %d", c.user, c.password, res.StatusCode)
-		}
 	}
 }

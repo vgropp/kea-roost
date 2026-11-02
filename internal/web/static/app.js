@@ -24,12 +24,19 @@ const dialog = document.getElementById('dialog');
 let dialogGeneration = 0;
 let meta = { writable: false, serverName: '' };
 
+const AUTH_PATHS = ['session', 'login', 'login/totp', 'setup', 'logout'];
+
 async function api(method, path, body) {
   const res = await fetch('api/' + path, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
   });
+  // an ended session leads back to the login, wherever it happens
+  if (res.status === 401 && !AUTH_PATHS.includes(path)) {
+    location.reload();
+    throw new Error('login required');
+  }
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { /* non-JSON error page */ }
@@ -1449,7 +1456,7 @@ pages.settings = () => {
           h('input', { class: 'mono-input', type: 'number', name: f.key, min: String(f.min), max: String(f.max), value: f.value, required: true }), ' ', f.unit),
         h('span', { class: 'muted setting-help' }, `${f.help} Default: ${f.default}.`))))));
   };
-  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Settings')), notice, form);
+  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Settings')), notice, form, ...(meta.writable ? [usersSection()] : []));
   api('GET', 'settings').then(draw).catch(err => notice.replaceChildren(errorNote(err)));
 };
 
@@ -1482,8 +1489,244 @@ function themeControls() {
   bind('mode-select', 'mode', localStorage.getItem('mode') || 'auto');
 }
 
+function authBox(title, intro, form, error) {
+  document.querySelector('header.top nav').hidden = true;
+  view.replaceChildren(h('div', { class: 'auth-box panel pad' },
+    h('h1', {}, title), intro ? h('p', { class: 'muted' }, intro) : null, error, form));
+  form.querySelector('input')?.focus();
+}
+
+function authField(label, input) {
+  return h('label', { class: 'auth-field' }, h('span', {}, label), input);
+}
+
+function loginView() {
+  const error = h('div');
+  const name = h('input', { name: 'username', autocomplete: 'username', required: true });
+  const password = h('input', { name: 'password', type: 'password', autocomplete: 'current-password', required: true });
+  const submit = async event => {
+    event.preventDefault();
+    try {
+      const r = await api('POST', 'login', { name: name.value, password: password.value });
+      if (r.totp) codeView(r.ticket);
+      else location.reload();
+    } catch (err) {
+      error.replaceChildren(errorNote(err));
+      password.value = '';
+      password.focus();
+    }
+  };
+  authBox('Log in', '', h('form', { onsubmit: submit }, authField('User name', name), authField('Password', password),
+    h('button', { class: 'primary', type: 'submit' }, 'Log in')), error);
+}
+
+function codeView(ticket) {
+  const error = h('div');
+  const code = h('input', { name: 'code', inputmode: 'numeric', autocomplete: 'one-time-code', pattern: '[0-9 ]{6,7}', required: true });
+  const submit = async event => {
+    event.preventDefault();
+    try {
+      await api('POST', 'login/totp', { ticket, code: code.value });
+      location.reload();
+    } catch (err) {
+      error.replaceChildren(errorNote(err));
+      code.value = '';
+      code.focus();
+    }
+  };
+  authBox('2FA', 'Enter the TOTP code.', h('form', { onsubmit: submit },
+    authField('Code', code), h('div', { class: 'dialog-actions' },
+      h('button', { type: 'button', onclick: loginView }, 'Back'), h('button', { class: 'primary', type: 'submit' }, 'Log in'))), error);
+}
+
+function setupView() {
+  const error = h('div');
+  const code = h('input', { name: 'code', autocomplete: 'off', required: true });
+  const name = h('input', { name: 'username', autocomplete: 'username', required: true, value: 'admin' });
+  const password = h('input', { name: 'password', type: 'password', autocomplete: 'new-password', minlength: '12', required: true });
+  const repeat = h('input', { type: 'password', autocomplete: 'new-password', minlength: '12', required: true });
+  const submit = async event => {
+    event.preventDefault();
+    if (password.value !== repeat.value) {
+      error.replaceChildren(h('div', { class: 'note crit' }, 'The passwords differ.'));
+      return;
+    }
+    try {
+      await api('POST', 'setup', { code: code.value, name: name.value, password: password.value });
+      location.reload();
+    } catch (err) {
+      error.replaceChildren(errorNote(err));
+    }
+  };
+  authBox('Welcome to Kea Roost',
+    'There is no account yet. Create the first admin with the setup code Kea Roost printed to its log, for example with "docker compose logs kea-roost".',
+    h('form', { onsubmit: submit }, authField('Setup code', code), authField('User name', name),
+      authField('Password, at least 12 characters', password), authField('Password again', repeat),
+      h('button', { class: 'primary', type: 'submit' }, 'Create admin')), error);
+}
+
+function accountDialog() {
+  const error = h('div');
+  const body = h('div');
+  const current = h('input', { type: 'password', autocomplete: 'current-password', required: true });
+  const next = h('input', { type: 'password', autocomplete: 'new-password', minlength: '12', required: true });
+  const changePassword = h('form', {
+    onsubmit: async event => {
+      event.preventDefault();
+      try {
+        await api('PUT', 'account/password', { current: current.value, new: next.value });
+        current.value = next.value = '';
+        error.replaceChildren(h('div', { class: 'note ok' }, 'Password changed. Other sessions of your account ended.'));
+      } catch (err) {
+        error.replaceChildren(errorNote(err));
+      }
+    },
+  }, h('h3', {}, 'Password'), authField('Current password', current), authField('New password, at least 12 characters', next),
+  h('button', { type: 'submit' }, 'Change password'));
+  // the switch shows the state; flipping it opens the step that changes it, and the
+  // change itself is confirmed with the current password and a code of the app
+  const drawTOTP = async () => {
+    const a = await api('GET', 'account');
+    const toggle = h('input', { type: 'checkbox', role: 'switch', class: 'switch', checked: a.totp });
+    const head = [h('h3', {}, '2FA'), h('label', { class: 'check' }, toggle, ' TOTP')];
+    const confirmForm = (intro, button, buttonClass, send) => {
+      const code = h('input', { inputmode: 'numeric', autocomplete: 'one-time-code', required: true });
+      const password = h('input', { type: 'password', autocomplete: 'current-password', required: true });
+      return h('form', {
+        onsubmit: async event => {
+          event.preventDefault();
+          try {
+            await send(code.value, password.value);
+            error.replaceChildren();
+            drawTOTP();
+          } catch (err) {
+            error.replaceChildren(errorNote(err));
+          }
+        },
+      }, ...intro, authField('TOTP code', code), authField('Current password', password),
+      h('div', { class: 'dialog-actions' }, h('button', {
+        type: 'button',
+        onclick: () => {
+          error.replaceChildren();
+          drawTOTP();
+        },
+      }, 'Cancel'), h('button', { class: buttonClass, type: 'submit' }, button)));
+    };
+    toggle.onchange = async () => {
+      if (a.totp) {
+        body.replaceChildren(...head, confirmForm([], 'Turn off', 'danger',
+          (code, password) => api('DELETE', 'account/totp', { code, password })));
+        return;
+      }
+      let setup;
+      try {
+        setup = await api('POST', 'account/totp');
+      } catch (err) {
+        error.replaceChildren(errorNote(err));
+        toggle.checked = false;
+        return;
+      }
+      const qr = h('img', { class: 'totp-qr', alt: 'TOTP QR code', src: `api/account/totp/qr?${Date.now()}` });
+      body.replaceChildren(...head, confirmForm([
+        h('p', {}, 'Scan the QR code or enter the secret in your TOTP app.'),
+        qr, h('p', { class: 'mono totp-secret' }, setup.secret.match(/.{1,4}/g).join(' ')),
+      ], 'Turn on', 'primary', (code, password) => api('POST', 'account/totp/confirm', { code, password })));
+    };
+    body.replaceChildren(...head);
+  };
+  showDialog(closeButton(), h('h2', {}, `Account ${meta.user}`), error, changePassword, body,
+    h('div', { class: 'dialog-actions' }, h('button', {
+      onclick: async () => {
+        await api('POST', 'logout');
+        location.reload();
+      },
+    }, 'Log out')));
+  drawTOTP().catch(err => error.replaceChildren(errorNote(err)));
+}
+
+function usersSection() {
+  const notice = h('div');
+  const table = dataTable({
+    search: 'Search users',
+    empty: 'No users',
+    columns: [
+      { key: 'name', label: 'User', class: 'mono', search: r => r.name },
+      { key: 'role', label: 'Role', search: r => r.role, render: r => h('span', { class: 'tag' }, r.role) },
+      { key: 'mfa', label: '2FA', render: r => r.mfa ? state('ok', 'on') : state('neutral', 'off') },
+      { key: 'created', label: 'Created', class: 'mono', render: r => fmtShort(r.created) },
+    ],
+    actions: [r => h('button', { class: 'small', onclick: () => userDialog(r, load) }, 'Edit'),
+      r => r.name === meta.user ? null : h('button', {
+        class: 'small danger',
+        onclick: () => confirmDialog('Delete user', `Really delete ${r.name}? Their sessions end at once.`, 'Delete', async () => {
+          await api('DELETE', 'users/' + encodeURIComponent(r.name));
+          closeDialog();
+          load();
+        }),
+      }, 'Delete')],
+  });
+  const load = async () => {
+    try {
+      table.setRows(await api('GET', 'users'));
+      notice.replaceChildren();
+    } catch (err) {
+      notice.replaceChildren(errorNote(err));
+    }
+  };
+  load();
+  return h('section', { id: 'users', class: 'settings-users' },
+    h('div', { class: 'page-head' }, h('h2', {}, 'Users')),
+    h('p', { class: 'muted' }, 'Admins may change everything, viewers only look. Every user changes their own password and 2FA in the account menu.'),
+    notice, table.el,
+    h('div', { class: 'dialog-actions' }, h('button', { class: 'primary', type: 'button', onclick: () => userDialog(null, load) }, 'New user')));
+}
+
+function userDialog(existing, reload) {
+  const error = h('div');
+  const name = h('input', { value: existing?.name ?? '', disabled: !!existing, required: true, autocomplete: 'off' });
+  const role = h('select', {}, h('option', { value: 'viewer' }, 'viewer'), h('option', { value: 'admin' }, 'admin'));
+  role.value = existing?.role ?? 'viewer';
+  const password = h('input', { type: 'password', autocomplete: 'new-password', minlength: '12', required: !existing });
+  // the own password and 2FA go through the account menu
+  const own = existing?.name === meta.user;
+  const reset = existing?.mfa && !own ? h('input', { type: 'checkbox' }) : null;
+  const save = async event => {
+    event.preventDefault();
+    try {
+      if (existing) {
+        await api('PUT', 'users/' + encodeURIComponent(existing.name), { role: role.value, password: own ? '' : password.value, resetTotp: !!reset?.checked });
+      } else {
+        await api('POST', 'users', { name: name.value, role: role.value, password: password.value });
+      }
+      closeDialog();
+      reload();
+    } catch (err) {
+      error.replaceChildren(errorNote(err));
+    }
+  };
+  showDialog(h('h2', {}, existing ? `Edit ${existing.name}` : 'New user'), error, h('form', { onsubmit: save },
+    authField('User name', name), authField('Role', role),
+    own ? h('p', { class: 'muted' }, 'Your own password and 2FA are changed in the account menu.')
+      : authField(existing ? 'New password, empty keeps the current one' : 'Password, at least 12 characters', password),
+    reset ? h('label', { class: 'check' }, reset, ' Reset 2FA (lost device)') : null,
+    h('div', { class: 'dialog-actions' }, h('button', { type: 'button', onclick: closeDialog }, 'Cancel'),
+      h('button', { class: 'primary', type: 'submit' }, 'Save'))));
+}
+
 async function start() {
   themeControls();
+  let session;
+  try {
+    session = await api('GET', 'session');
+  } catch (err) {
+    view.replaceChildren(errorNote(err));
+    return;
+  }
+  if (!session.user) {
+    if (session.setup) setupView();
+    else loginView();
+    return;
+  }
   try {
     meta = await api('GET', 'meta');
   } catch (err) {
@@ -1500,7 +1743,9 @@ async function start() {
   document.getElementById('nav').replaceChildren(...groups.map(group => h('div', { class: 'nav-group' },
     group.filter(Boolean).map(([page, label]) => h('a', { href: '#/' + page, 'data-page': page }, label)))));
   document.querySelector('.brand').title = 'Kea Roost ' + meta.version;
-  document.getElementById('server-chip').replaceChildren(meta.writable ? '' : h('span', { class: 'tag' }, 'read-only'));
+  document.getElementById('server-chip').replaceChildren();
+  document.getElementById('account').replaceChildren(h('button', { class: 'small account-button', title: 'Password, 2FA, log out', onclick: accountDialog },
+    meta.user, meta.writable ? null : h('span', { class: 'tag' }, 'viewer')));
   window.addEventListener('hashchange', route);
   route();
 }

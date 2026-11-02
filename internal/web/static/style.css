@@ -46,7 +46,7 @@ a { color: var(--accent); text-decoration: none; }
 .top {
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: 0 16px;
   padding: 0 20px;
   min-height: 48px;
   background: var(--surface);
@@ -60,7 +60,9 @@ a { color: var(--accent); text-decoration: none; }
 .brand { color: var(--ink-2); font: 600 14px var(--mono); }
 .brand-mark { color: var(--accent); margin-right: 4px; }
 
-nav { display: flex; gap: 2px; flex: 1; overflow-x: auto; scrollbar-width: none; }
+/* The links never shrink out of sight: when the row is full, the controls after them
+   wrap to a second row. Only a phone scrolls them. */
+nav { display: flex; gap: 2px; flex: 1 0 auto; }
 
 nav a {
   color: var(--ink-2);
@@ -71,6 +73,10 @@ nav a {
 nav a:hover { color: var(--ink); }
 nav a.active { color: var(--ink); border-bottom-color: var(--accent); }
 
+/* wraps as one block, to the right, when the links fill the row */
+.settings-users { margin-top: 32px; scroll-margin-top: 64px; }
+.settings-users .page-head h2 { flex: 1; margin: 0; }
+.top-controls { display: flex; align-items: center; gap: 12px; margin-left: auto; min-height: 42px; }
 .server-chip { display: flex; align-items: center; gap: 8px; font: 12px var(--mono); color: var(--ink-2); }
 
 main { padding: 20px; max-width: 1700px; margin: 0 auto; }
@@ -250,8 +256,9 @@ dialog h2 { font: 600 16px var(--sans); color: var(--ink); text-transform: none;
 @media (max-width: 640px) {
   main { padding: 12px; }
   .top { padding: 0 12px; gap: 8px; }
+  .top-controls { gap: 8px; }
   .server-chip { display: none; }
-  nav { order: 3; flex-basis: 100%; }
+  nav { order: 3; flex: 1 1 100%; min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .meter-row { grid-template-columns: 1fr auto; }
   .meter-row .meter { grid-column: 1 / -1; grid-row: 2; }
   .field-row { grid-template-columns: 1fr; }
@@ -378,3 +385,19 @@ a.addr:hover { outline: 2px solid var(--ink); }
 .addr-detail-head { display: flex; justify-content: space-between; align-items: center; }
 .more-ranges { margin-top: 6px; font-size: 13px; }
 .more-ranges summary { cursor: pointer; color: var(--ink-3); margin-bottom: 6px; }
+.auth-box { max-width: 380px; margin: 8vh auto 0; }
+.auth-box h1 { margin: 10px 0 6px; }
+.auth-brand { display: block; margin-bottom: 4px; }
+.auth-box form, dialog form { display: grid; gap: 10px; margin-top: 12px; }
+.auth-field { display: grid; gap: 4px; }
+.auth-field span { color: var(--ink-3); font-size: 12px; }
+.auth-field input, .auth-field select { width: 100%; box-sizing: border-box; }
+.account-button { display: inline-flex; gap: 6px; align-items: center; }
+.totp-qr { display: block; width: 200px; height: 200px; image-rendering: pixelated; background: #fff; padding: 8px; margin: 8px 0; }
+.totp-secret { letter-spacing: .05em; overflow-wrap: anywhere; }
+label.check { display: flex; gap: 6px; align-items: center; }
+input.switch { appearance: none; width: 34px; height: 18px; border-radius: 9px; background: var(--line); position: relative; cursor: pointer; margin: 0; flex: none; }
+input.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--surface); transition: left .15s; }
+input.switch:checked { background: var(--accent); }
+input.switch:checked::after { left: 18px; }
+input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

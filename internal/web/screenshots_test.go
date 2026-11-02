@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
+
+	"github.com/vgropp/kea-roost/internal/web"
 )
 
 // showcase fills the test double with an invented home network.
@@ -141,6 +143,9 @@ func TestScreenshots(t *testing.T) {
 	b.do(chromedp.Navigate(b.url + "/#/settings"))
 	b.poll(`document.querySelector('input[name="reviewDays"]') !== null`)
 	shot("settings")
+	b.poll(`document.querySelectorAll('#users tbody tr').length === 2`)
+	b.exec(`document.getElementById('users').scrollIntoView()`)
+	shot("users")
 
 	subnet := func(cidr string) {
 		b.fake.Lock()
@@ -159,4 +164,36 @@ func TestScreenshots(t *testing.T) {
 	b.exec(`document.querySelectorAll('.addr-block')[2].click()`)
 	b.poll(`document.querySelectorAll('.addr-detail .addr').length === 256`)
 	shot("subnet-blocks")
+}
+
+// TestLoginScreenshots writes the pictures of the login and the first setup.
+func TestLoginScreenshots(t *testing.T) {
+	dir := os.Getenv("SCREENSHOT_DIR")
+	if dir == "" {
+		t.Skip("SCREENSHOT_DIR is not set")
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join("..", "..", dir)
+	}
+	shoot := func(b *browser, name string) {
+		t.Helper()
+		b.do(chromedp.Sleep(300 * time.Millisecond))
+		data, err := chromedp.Run(b.ctx, chromedp.CaptureScreenshot())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name+".png"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := startWith(t, login, false)
+	b.do(chromedp.EmulateViewport(1200, 700))
+	b.theme("modern", "dark")
+	b.poll(`document.querySelector('h1')?.textContent === 'Log in'`)
+	shoot(b, "login")
+	b = startWith(t, web.Auth{SetupCode: "code"}, false)
+	b.do(chromedp.EmulateViewport(1200, 800))
+	b.theme("modern", "dark")
+	b.poll(`document.querySelector('h1')?.textContent === 'Welcome to Kea Roost'`)
+	shoot(b, "setup")
 }

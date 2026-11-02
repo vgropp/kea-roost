@@ -14,16 +14,19 @@
   <header class="top">
     <a class="brand" href="#/dashboard"><span class="brand-mark">kea</span>roost</a>
     <nav id="nav"></nav>
-    <div id="server-chip" class="server-chip"></div>
-    <select id="theme-select" aria-label="Theme">
-      <option value="classic">Classic</option>
-      <option value="modern">Modern</option>
-    </select>
-    <select id="mode-select" aria-label="Light or dark">
-      <option value="auto">Auto</option>
-      <option value="light">Light</option>
-      <option value="dark">Dark</option>
-    </select>
+    <div class="top-controls">
+      <div id="server-chip" class="server-chip"></div>
+      <div id="account"></div>
+      <select id="theme-select" aria-label="Theme">
+        <option value="classic">Classic</option>
+        <option value="modern">Modern</option>
+      </select>
+      <select id="mode-select" aria-label="Light or dark">
+        <option value="auto">Auto</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
+    </div>
   </header>
   <main id="view"></main>
   <dialog id="dialog"></dialog>

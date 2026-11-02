@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vgropp/kea-roost/internal/auth"
 	"github.com/vgropp/kea-roost/internal/config"
 	"github.com/vgropp/kea-roost/internal/kea"
 	"github.com/vgropp/kea-roost/internal/manager"
@@ -82,7 +83,22 @@ func run() error {
 	if err := mgr.LoadSettings(); err != nil {
 		return err
 	}
-	handler := web.New(mgr, web.Auth{User: cfg.User, Password: cfg.Password, MetricsUser: cfg.MetricsUser, MetricsPassword: cfg.MetricsPass, MetricsOff: cfg.MetricsOff}, cfg.BasePath)
+	users, err := auth.LoadUsers(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	setupCode := ""
+	if users.Empty() {
+		if setupCode, err = auth.RandomToken(); err != nil {
+			return err
+		}
+		// The code goes to the log only: whoever can read it has access to the server.
+		slog.Warn("no account yet: open the interface and create the first admin with this setup code", "code", setupCode)
+	}
+	for _, name := range config.Obsolete(os.Getenv) {
+		slog.Warn("setting is no longer used, remove it", "name", name)
+	}
+	handler := web.New(mgr, web.Auth{Users: users, SetupCode: setupCode, TrustedProxies: cfg.TrustedProxies, MetricsUser: cfg.MetricsUser, MetricsPassword: cfg.MetricsPass, MetricsOff: cfg.MetricsOff}, cfg.BasePath)
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           handler,
@@ -103,9 +119,6 @@ func run() error {
 		}
 	}()
 
-	if !cfg.WriteEnabled() {
-		slog.Warn("no login configured, running read-only")
-	}
 	slog.Info("listening", "version", version, "address", cfg.Listen, "kea", cfg.KeaURL)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err

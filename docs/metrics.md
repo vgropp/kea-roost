@@ -5,7 +5,7 @@
 `/metrics` serves all metrics in the Prometheus format. It needs no login by default, like
 most exporters, and shows server names, subnets, and counts of devices and findings. To
 protect it, set `METRICS_USER` and `METRICS_PASSWORD`: this login opens only this path, and
-the login of the interface does not work there. `METRICS_ENABLED=false` removes the path altogether.
+the accounts of the interface do not work there. `METRICS_ENABLED=false` removes the path altogether.
 
     scrape_configs:
       - job_name: kea-roost
