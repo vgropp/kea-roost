@@ -209,6 +209,7 @@ td.mono.wrap { white-space: normal; overflow-wrap: anywhere; min-width: 9ch; }
 td.mono.clip { max-width: 11ch; overflow: hidden; text-overflow: ellipsis; }
 td.mono.clip { cursor: pointer; }
 td.mono.clip:has(.tag) { max-width: 16ch; }
+td.mono.clip.address6 { max-width: 22ch; }
 /* open, the whole value stands on one line; this comes last so it wins */
 td.mono.clip.open { max-width: none; overflow: visible; cursor: text; }
 td.actions { white-space: nowrap; text-align: right; position: sticky; right: 0; background: var(--surface); }

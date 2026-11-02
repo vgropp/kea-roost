@@ -62,7 +62,7 @@ type Lease6View struct {
 	HWAddress string `json:"hwAddress,omitempty"`
 	// MACSource says where a MAC that Kea did not report comes from: "duid" when it
 	// is part of the DUID, "dhcpv4" when an IPv4 lease has the same DUID in its
-	// client-id.
+	// client-id, "network" when the ARP monitor saw the address on that MAC.
 	MACSource string    `json:"macSource,omitempty"`
 	Vendor    string    `json:"vendor,omitempty"`
 	Hostname  string    `json:"hostname"`
@@ -265,6 +265,23 @@ func subnet6Text(subnets []kea.Subnet6, id int64) string {
 // Leases6 returns all IPv6 leases, named by the IPv6 reservation of the client or
 // the IPv4 reservation of its MAC.
 func (m *Manager) Leases6(ctx context.Context) (*Lease6List, error) {
+	devices, _ := m.arpDevices6(ctx)
+	return m.leases6(ctx, devices)
+}
+
+// arpDevices6 asks the ARP monitor, if there is one, with the short timeout of a
+// page that must not wait for it.
+func (m *Manager) arpDevices6(ctx context.Context) ([]arpDevice, error) {
+	if !m.ARPMonitorEnabled() {
+		return nil, nil
+	}
+	short, cancel := context.WithTimeout(ctx, dashboardARPTimeout)
+	defer cancel()
+	return m.arpDevices(short)
+}
+
+// leases6 builds the lease views with what the ARP monitor saw.
+func (m *Manager) leases6(ctx context.Context, arp []arpDevice) (*Lease6List, error) {
 	leases, err := m.kea6.Leases6(ctx)
 	if err != nil {
 		return nil, err
@@ -287,6 +304,9 @@ func (m *Manager) Leases6(ctx context.Context) (*Lease6List, error) {
 	if warning != nil {
 		list.Warnings = append(list.Warnings, *warning)
 	}
+	// the ARP monitor sees which MAC uses an address, also for clients that keep
+	// their MAC from Kea
+	macByIP := macsByIPv6(arp)
 	macByDUID := map[string]string{}
 	if leases4, err := m.source(ctx).client.Leases(ctx); err == nil {
 		for _, l := range leases4 {
@@ -322,6 +342,8 @@ func (m *Manager) Leases6(ctx context.Context) (*Lease6List, error) {
 				v.HWAddress, v.MACSource = mac, "duid"
 			} else if mac := macByDUID[strings.ToLower(l.DUID)]; mac != "" {
 				v.HWAddress, v.MACSource = mac, "dhcpv4"
+			} else if mac := macByIP[canonical6(l.IPAddress)]; mac != "" && !v.Prefix {
+				v.HWAddress, v.MACSource = mac, "network"
 			}
 			v.Vendor = oui.Lookup(v.HWAddress)
 		}
@@ -562,4 +584,13 @@ func (m *Manager) fillDHCP6(ctx context.Context, d *Dashboard) {
 			d.Warnings = append(d.Warnings, Warning{severity, fmt.Sprintf("Subnet %s is %.0f %% utilized", s.Subnet, *u.Percent)})
 		}
 	}
+}
+
+// canonical6 writes an IPv6 address the way netip does, so that addresses from
+// different sources compare equal.
+func canonical6(text string) string {
+	if ip, err := netip.ParseAddr(text); err == nil {
+		return ip.String()
+	}
+	return text
 }

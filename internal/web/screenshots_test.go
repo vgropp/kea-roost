@@ -62,8 +62,13 @@ func showcase(b *browser) {
 		if i > 9 {
 			age = time.Duration(i) * 9 * time.Hour
 		}
-		monitorAnswer += fmt.Sprintf(`{"mac":%q,"ipv4":[%q],"hostname":%q,"first_seen":%q,"last_seen":%q},`,
-			d.mac, d.ip, d.name+".lan.", seen(time.Duration(40+i)*24*time.Hour), seen(age))
+		// every other device also speaks IPv6, with an invented ULA address
+		ipv6 := "[]"
+		if i%2 == 0 {
+			ipv6 = fmt.Sprintf(`["fe80::%x","fd00:db8:1::%x"]`, 0x100+i, 0x1000+i)
+		}
+		monitorAnswer += fmt.Sprintf(`{"mac":%q,"ipv4":[%q],"ipv6":%s,"hostname":%q,"first_seen":%q,"last_seen":%q},`,
+			d.mac, d.ip, ipv6, d.name+".lan.", seen(time.Duration(40+i)*24*time.Hour), seen(age))
 		if i%2 == 0 && i < 9 {
 			dashboardAnswer += fmt.Sprintf(`{"mac":%q,"name":%q,"station_id":"ap-1","iface":"home","signal":%d,"connected_time":3600,"inactive":300,"last_seen":%q,"device_info":{"ipaddrs":[%q],"name":%q}},`,
 				d.mac, []string{"attic", "garden", "office"}[i%3], -48-i*4, seen(0), d.ip, d.name)

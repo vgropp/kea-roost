@@ -66,6 +66,7 @@ type ClientReservation struct {
 // ClientDevice is what the network knows about a client.
 type ClientDevice struct {
 	Addresses []string `json:"addresses"`
+	IPv6      []string `json:"ipv6"`
 	Hostname  string   `json:"hostname"`
 	FirstSeen string   `json:"firstSeen,omitempty"`
 	LastSeen  string   `json:"lastSeen"`
@@ -431,10 +432,8 @@ func (m *Manager) Client(ctx context.Context, id string) (*ClientView, error) {
 	if device != nil {
 		// a client without an address yet shows up as 0.0.0.0
 		addresses := slices.DeleteFunc(slices.Clone(device.IPv4), func(ip string) bool { return ip == "0.0.0.0" })
-		v.Device = &ClientDevice{Addresses: addresses, Hostname: trimName(device.Hostname), LastSeen: device.LastSeen.UTC().Format("2006-01-02T15:04:05Z")}
-		if !device.FirstSeen.IsZero() {
-			v.Device.FirstSeen = device.FirstSeen.UTC().Format("2006-01-02T15:04:05Z")
-		}
+		v.Device = clientDevice(*device)
+		v.Device.Addresses = addresses
 		if v.Name == "" {
 			v.Name = v.Device.Hostname
 		}
@@ -482,4 +481,16 @@ func (m *Manager) Client(ctx context.Context, id string) (*ClientView, error) {
 		}
 	}
 	return v, nil
+}
+
+// clientDevice is what the network knows about a client.
+func clientDevice(d arpDevice) *ClientDevice {
+	c := &ClientDevice{Addresses: slices.Clone(d.IPv4), IPv6: routableIPv6(d.IPv6), Hostname: trimName(d.Hostname), LastSeen: d.LastSeen.UTC().Format("2006-01-02T15:04:05Z")}
+	if c.Addresses == nil {
+		c.Addresses = []string{}
+	}
+	if !d.FirstSeen.IsZero() {
+		c.FirstSeen = d.FirstSeen.UTC().Format("2006-01-02T15:04:05Z")
+	}
+	return c
 }

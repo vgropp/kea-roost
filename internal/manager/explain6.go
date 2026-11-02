@@ -16,9 +16,11 @@ type Client6View struct {
 	Name        string            `json:"name"`
 	Lease       *Lease6View       `json:"lease"`
 	Reservation *Reservation6View `json:"reservation"`
-	Explanation *Explanation      `json:"explanation"`
-	History     []AuditEntry      `json:"history"`
-	Warnings    []string          `json:"warnings"`
+	// Device is what the ARP monitor saw of the client, by its MAC or this address.
+	Device      *ClientDevice `json:"device"`
+	Explanation *Explanation  `json:"explanation"`
+	History     []AuditEntry  `json:"history"`
+	Warnings    []string      `json:"warnings"`
 }
 
 // matchesClient tells whether a reservation is the one of a lease: by address,
@@ -59,7 +61,12 @@ func (m *Manager) Client6(ctx context.Context, address string) (*Client6View, er
 	if err != nil {
 		return nil, err
 	}
-	leases, err := m.Leases6(ctx)
+	// one answer of the ARP monitor serves the leases and the network card
+	arp, arpErr := m.arpDevices6(ctx)
+	if arpErr != nil {
+		v.Warnings = append(v.Warnings, "Network data unavailable: "+arpErr.Error())
+	}
+	leases, err := m.leases6(ctx, arp)
 	if err != nil {
 		v.Warnings = append(v.Warnings, "Lease data unavailable: "+err.Error())
 	} else {
@@ -87,6 +94,17 @@ func (m *Manager) Client6(ctx context.Context, address string) (*Client6View, er
 		v.Name = trimName(v.Reservation.Hostname)
 	case v.Lease != nil && v.Lease.Hostname != "":
 		v.Name = trimName(v.Lease.Hostname)
+	}
+
+	mac := ""
+	if v.Lease != nil {
+		mac = strings.ToLower(v.Lease.HWAddress)
+	}
+	for _, d := range arp {
+		if (mac != "" && strings.EqualFold(d.MAC, mac)) || slices.Contains(routableIPv6(d.IPv6), ip) {
+			v.Device = clientDevice(d)
+			break
+		}
 	}
 
 	var host kea.Host

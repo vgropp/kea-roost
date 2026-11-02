@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vgropp/kea-roost/internal/kea"
 	"github.com/vgropp/kea-roost/internal/keatest"
@@ -353,5 +355,39 @@ func TestReservation6RefusesTheNetworkAddress(t *testing.T) {
 	var v *ValidationError
 	if !errors.As(err, &v) || !strings.Contains(v.Error(), "anycast") {
 		t.Errorf("%v", err)
+	}
+}
+
+func TestARPMonitorAddsIPv6(t *testing.T) {
+	e, _ := setup6(t)
+	seen := time.Now().UTC().Format(time.RFC3339)
+	monitor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `[{"mac":"02:00:00:00:00:42","ipv4":["192.0.2.42"],"ipv6":["fe80::42","FD00:DB8:1::1001"],"hostname":"laptop","last_seen":%q}]`, seen)
+	}))
+	t.Cleanup(monitor.Close)
+	e.mgr.SetARPMonitor(monitor.URL)
+	ctx := context.Background()
+
+	devices, err := e.mgr.Devices(ctx)
+	if err != nil || len(devices.Devices) != 1 || fmt.Sprint(devices.Devices[0].IPv6) != "[fd00:db8:1::1001]" {
+		t.Fatalf("%+v %v", devices, err)
+	}
+	// the laptop has a random DUID and Kea knows no MAC: the network does
+	leases, err := e.mgr.Leases6(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var laptop *Lease6View
+	for i := range leases.Leases {
+		if leases.Leases[i].Address == "fd00:db8:1::1001" {
+			laptop = &leases.Leases[i]
+		}
+	}
+	if laptop == nil || laptop.HWAddress != "02:00:00:00:00:42" || laptop.MACSource != "network" {
+		t.Fatalf("%+v", laptop)
+	}
+	c, err := e.mgr.Client6(ctx, "fd00:db8:1::1001")
+	if err != nil || c.Device == nil || fmt.Sprint(c.Device.IPv6) != "[fd00:db8:1::1001]" {
+		t.Errorf("%+v %v", c, err)
 	}
 }

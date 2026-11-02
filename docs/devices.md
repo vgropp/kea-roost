@@ -6,8 +6,9 @@
 
 The devices page lists what is on the network without a reservation for its MAC or
 address; a filter adds the reserved ones. Devices are marked current (seen within 15
-minutes), recent (last day) or stale, and an address used by another device than the
-reserved one is marked as a MAC mismatch. **Reserve** opens the reservation dialog with
+minutes), recent (last day) or stale; the filter for the last day includes the current
+ones. An address used by another device than the reserved one is marked as a MAC
+mismatch. **Reserve** opens the reservation dialog with
 address, MAC and name filled in; a conflict shows while typing.
 
 ![Dialog for a new DHCP reservation showing an address conflict](screenshots/reservation-dialog.png)
@@ -20,6 +21,9 @@ unreachable, only its part is missing.
 
 [arpmonitor](https://github.com/vgropp/arpmonitor) records MAC and IP addresses from
 ARP traffic, so it also finds wired and static devices that Kea knows nothing about.
+From neighbor advertisements it learns their IPv6 addresses as well: the devices page
+shows them beside the IPv4 address, without link-local ones, and an
+[IPv6](ipv6.md) lease whose MAC Kea does not know gets it from there.
 It resolves names through DNS and knows when a device was first and last seen. Run it
 with `--arp-scan-interval=5m` to also find silent devices and to make the last seen
 time reflect what is online right now.

@@ -53,7 +53,9 @@ it can, and then shows the IPv4 reservation of that MAC as the device:
 
 - from Kea, if the client sent it,
 - from the DUID, for the types LLT and LL, which contain one,
-- from an IPv4 lease whose client-id holds the same DUID (RFC 4361), common on Linux.
+- from an IPv4 lease whose client-id holds the same DUID (RFC 4361), common on Linux,
+- from the [ARP monitor](devices.md#arpmonitor), which sees the MAC that uses the
+  address.
 
 The tooltip of the MAC says which. The link is a hint: it is what the client claims
 about itself. A click on a shortened DUID or client-id shows all of it, selected for

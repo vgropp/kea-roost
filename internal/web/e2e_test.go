@@ -86,7 +86,7 @@ func startWith(t *testing.T, accounts web.Auth, loggedIn bool) *browser {
 			return
 		}
 		seen := func(age time.Duration) string { return time.Now().Add(-age).UTC().Format(time.RFC3339) }
-		fmt.Fprintf(w, `[{"mac":"06:00:00:aa:01:64","ipv4":["192.0.2.100"],"hostname":"phone.lan.","first_seen":%q,"last_seen":%q},
+		fmt.Fprintf(w, `[{"mac":"06:00:00:aa:01:64","ipv4":["192.0.2.100"],"ipv6":["fe80::400:ff:feaa:164","fd00:db8:1::1001"],"hostname":"phone.lan.","first_seen":%q,"last_seen":%q},
 		                 {"mac":"00:00:0c:00:00:03","ipv4":["192.0.2.30"],"hostname":"camera.lan.","first_seen":%q,"last_seen":%q},
 		                 {"mac":"00:00:0c:00:00:04","ipv4":["192.0.2.31"],"first_seen":%q,"last_seen":%q},
 		                 {"mac":"00:00:0c:00:00:01","ipv4":["192.0.2.10"],"hostname":"printer.lan.","first_seen":%q,"last_seen":%q},
@@ -1276,5 +1276,25 @@ func TestIPv6ReservationStartsWithThePrefix(t *testing.T) {
 	b.fake6.Unlock()
 	if got != "[fd00:db8:1::30]" {
 		t.Errorf("reserved %s", got)
+	}
+}
+
+func TestDevicesShowIPv6(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/devices"))
+	b.poll(`[...document.querySelectorAll('th')].some(th => th.textContent.startsWith('IPv6'))`)
+	b.poll(`document.querySelector('tbody')?.innerText.includes('fd00:db8:1::1001')`)
+	if strings.Contains(b.text(`document.querySelector('tbody').innerText`), "fe80::") {
+		t.Error("a link-local address is listed")
+	}
+}
+
+func TestDevicesRecentFilterIncludesCurrent(t *testing.T) {
+	b := start(t)
+	b.do(chromedp.Navigate(b.url + "/#/devices?reserved=&seen=recent"))
+	b.poll(`document.querySelectorAll('tbody tr').length > 0`)
+	got := b.text(`[...document.querySelectorAll('tbody tr')].map(tr => tr.innerText).join('\n')`)
+	if !strings.Contains(got, "current") || strings.Contains(got, "stale") {
+		t.Errorf("rows: %s", got)
 	}
 }

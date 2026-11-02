@@ -767,7 +767,7 @@ pages.devices = params => {
   const notice = h('div');
   const table = dataTable({
     params,
-    search: 'Search IP, MAC, vendor or name',
+    search: 'Search IP, IPv6, MAC, vendor or name',
     empty: 'No devices',
     initialSort: 'lastSeen',
     rowClass: r => (seenState(r).key === 'stale' ? 'stale' : ''),
@@ -777,9 +777,14 @@ pages.devices = params => {
       // a conflict needs attention, so it never hides behind a reservation
       match: (r, v) => (r.reservation && !r.reservation.conflict ? 'reserved' : 'unreserved') === v,
     }, {
+      // the windows include each other: seen within a day also covers the last 15 minutes
       key: 'seen', label: 'Any age',
-      options: () => [{ value: 'current', label: 'Current' }, { value: 'recent', label: 'Recent' }, { value: 'stale', label: 'Stale' }],
-      match: (r, v) => seenState(r).key === v,
+      options: () => [
+        { value: 'current', label: 'Current, last 15 min' },
+        { value: 'recent', label: 'Current or recent, last day' },
+        { value: 'stale', label: 'Stale, older than a day' },
+      ],
+      match: (r, v) => v === 'recent' ? seenState(r).key !== 'stale' : seenState(r).key === v,
     }],
     columns: [
       {
@@ -787,6 +792,11 @@ pages.devices = params => {
         render: r => [clientLink(r.ipAddress), r.inPool ? ' ' : null, r.inPool ? h('span', { class: 'tag', title: 'Address is inside the dynamic pool' }, 'in pool') : null],
       },
       { key: 'hwAddress', label: 'MAC', class: 'mono', search: r => `${r.hwAddress} ${r.vendor || ''}`, render: r => macCell(r.hwAddress, r.vendor) },
+      {
+        key: 'ipv6', label: 'IPv6', class: 'mono clip address6', search: r => r.ipv6.join(' '), sort: r => ip6Key(r.ipv6[0] || ''),
+        // many of them are SLAAC addresses Kea does not know, so they are not links
+        render: r => r.ipv6.length ? h('span', { class: 'value', title: r.ipv6.join('\n') }, r.ipv6.join(', ')) : '–',
+      },
       { key: 'hostname', label: 'DNS name', search: r => r.hostname },
       {
         key: 'lease', label: 'Lease', sort: r => r.lease?.remaining ?? -1,
@@ -865,7 +875,7 @@ function lease6Columns() {
     { key: 'duid', label: 'DUID', class: 'mono clip', search: r => r.duid, render: r => duidCell(r.duid) },
     {
       key: 'hwAddress', label: 'MAC', class: 'mono', search: r => `${r.hwAddress || ''} ${r.vendor || ''}`,
-      render: r => r.macSource ? h('span', { title: { duid: 'Read from the DUID', dhcpv4: 'From the IPv4 lease with the same DUID' }[r.macSource] }, macCell(r.hwAddress, r.vendor)) : macCell(r.hwAddress, r.vendor),
+      render: r => r.macSource ? h('span', { title: { duid: 'Read from the DUID', dhcpv4: 'From the IPv4 lease with the same DUID', network: 'Seen on the network with this address' }[r.macSource] }, macCell(r.hwAddress, r.vendor)) : macCell(r.hwAddress, r.vendor),
     },
     { key: 'hostname', label: 'Hostname', search: r => r.hostname, render: r => shownName(r.hostname) },
     {
@@ -1786,6 +1796,7 @@ function clientBody(c) {
         ['Last seen', fmtAge(d.lastSeen)],
         d.firstSeen ? ['First seen', fmtShort(d.firstSeen)] : null,
         ['Addresses', d.addresses.length ? d.addresses.map(ip => h('div', {}, ip)) : '–'],
+        d.ipv6.length ? ['IPv6', d.ipv6.map(ip => h('div', { class: 'mono' }, ip))] : null,
         d.hostname ? ['DNS name', d.hostname] : null,
       ], 'Not seen'),
       w ? clientCard('WiFi', [['Access point', w.accessPoint], ['Network', w.interface], ['Signal', `${w.signal} dBm`], ['Connected', fmtDuration(w.connectedTime)]]) : null),
@@ -1848,6 +1859,12 @@ function client6Body(c) {
         ['By', `${r.identifierType} ${r.identifier}`],
         r.comment ? ['Comment', r.comment] : null,
       ], 'No reservation'),
+      clientCard('Network', c.device && [
+        ['Last seen', fmtAge(c.device.lastSeen)],
+        c.device.firstSeen ? ['First seen', fmtShort(c.device.firstSeen)] : null,
+        c.device.ipv6.length ? ['IPv6', c.device.ipv6.map(ip => h('div', { class: 'mono' }, ip))] : null,
+        c.device.addresses.length ? ['IPv4', c.device.addresses.map(ip => h('div', {}, ip))] : null,
+      ], 'Not seen'),
       clientCard('IPv4 device', device && [
         ['Name', device.hostname || '–'],
         ['Address', clientLink(device.ipAddress)],

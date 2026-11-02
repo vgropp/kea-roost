@@ -28,8 +28,10 @@ var ErrARPMonitorDisabled = errors.New("ARP monitor is not configured")
 
 // arpDevice is an entry of the /api/current answer of arpmonitor.
 type arpDevice struct {
-	MAC      string   `json:"mac"`
-	IPv4     []string `json:"ipv4"`
+	MAC  string   `json:"mac"`
+	IPv4 []string `json:"ipv4"`
+	// IPv6 comes from neighbor advertisements, newest first.
+	IPv6     []string `json:"ipv6"`
 	Hostname string   `json:"hostname"`
 	// FirstSeen is missing in older monitor versions.
 	FirstSeen time.Time `json:"first_seen"`
@@ -83,9 +85,11 @@ type DeviceView struct {
 	// Reservation is set when the MAC or the address is reserved.
 	Reservation *ReservationRef `json:"reservation,omitempty"`
 	Wifi        *WifiClient     `json:"wifi,omitempty"`
-	FirstSeen   time.Time       `json:"firstSeen,omitzero"`
-	LastSeen    time.Time       `json:"lastSeen"`
-	Lease       *LeaseView      `json:"lease"`
+	// IPv6 lists the addresses the device uses beyond its link-local one.
+	IPv6      []string   `json:"ipv6"`
+	FirstSeen time.Time  `json:"firstSeen,omitzero"`
+	LastSeen  time.Time  `json:"lastSeen"`
+	Lease     *LeaseView `json:"lease"`
 }
 
 // DeviceList is the answer of Devices.
@@ -107,6 +111,33 @@ func deviceAddress(d arpDevice, subnets []kea.Subnet) (netip.Addr, *kea.Subnet) 
 		}
 	}
 	return netip.Addr{}, nil
+}
+
+// routableIPv6 drops link-local addresses, which every device has and which say
+// nothing beyond the MAC.
+func routableIPv6(list []string) []string {
+	out := []string{}
+	for _, text := range list {
+		if ip, err := netip.ParseAddr(text); err == nil && ip.Is6() && !ip.IsLinkLocalUnicast() && !ip.IsUnspecified() {
+			out = append(out, ip.String())
+		}
+	}
+	return out
+}
+
+// macsByIPv6 maps the IPv6 addresses the monitor saw to their MAC. Of two devices
+// with one address, the one seen last has it now.
+func macsByIPv6(devices []arpDevice) map[string]string {
+	out := map[string]string{}
+	seen := map[string]time.Time{}
+	for _, d := range devices {
+		for _, ip := range routableIPv6(d.IPv6) {
+			if last, ok := seen[ip]; !ok || d.LastSeen.After(last) {
+				out[ip], seen[ip] = strings.ToLower(d.MAC), d.LastSeen
+			}
+		}
+	}
+	return out
 }
 
 // mergeWifiClients adds what the access points know. A connected client counts as
@@ -190,6 +221,7 @@ func (m *Manager) Devices(ctx context.Context) (*DeviceList, error) {
 			SubnetID:  subnet.ID,
 			Subnet:    subnet.Subnet,
 			InPool:    subnet.PoolContaining(ip) != nil,
+			IPv6:      routableIPv6(d.IPv6),
 			FirstSeen: d.FirstSeen,
 			LastSeen:  d.LastSeen,
 		}
