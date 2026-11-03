@@ -7,9 +7,9 @@
     "lint": "eslint && tsc -p ."
   },
   "devDependencies": {
-    "@eslint/js": "^10.0.1",
-    "eslint": "^10.14.0",
-    "typescript": "^7.0.2"
+    "@eslint/js": "10.0.1",
+    "eslint": "10.14.0",
+    "typescript": "7.0.2"
   },
   "engines": {
     "node": ">=22"
