@@ -365,3 +365,31 @@ func TestClientHistoryFindsAReservationByItsAddress(t *testing.T) {
 		t.Fatalf("history: %+v", c.History)
 	}
 }
+
+func TestContainsIPv6Address(t *testing.T) {
+	for text, want := range map[string]bool{
+		"fd00:db8:1::30": true,
+		"subnet 1, duid 00:03:00:01 (nas, FD00:DB8:1::30)": true,
+		"fd00:db8:1::30 (prefix)":                          true,
+		"x (nas, fd00:db8:1::300)":                         false,
+		"hw-address aa:bb:cc:00:00:30":                     false,
+	} {
+		if got := containsAddress(text, "fd00:db8:1::30"); got != want {
+			t.Errorf("%q: %v", text, got)
+		}
+	}
+}
+
+func TestContainsAddressAtTheEdges(t *testing.T) {
+	for text, ip := range map[string]string{
+		"server ::1 answers":        "::1",
+		"prefix 2001:db8:: is free": "2001:db8::",
+		"fd00:db8:1::30: reserved":  "fd00:db8:1::30",
+		"192.0.2.1: taken":          "192.0.2.1",
+		"at 192.0.2.1.":             "192.0.2.1",
+	} {
+		if !containsAddress(text, ip) {
+			t.Errorf("%s not found in %q", ip, text)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"maps"
 	"math/big"
 	"net/netip"
 	"slices"
@@ -196,7 +197,9 @@ func subnetMap6(s kea.Subnet6, leases []kea.Lease6, hosts []kea.Host, now time.T
 			pd.Prefixes = append(pd.Prefixes, cell)
 		}
 		if pd.TooLarge {
-			for text, used := range prefixes {
+			// sorted first, so that a cut keeps the same prefixes on every call
+			for _, text := range slices.Sorted(maps.Keys(prefixes)) {
+				used := prefixes[text]
 				if q, err := netip.ParsePrefix(text); err == nil && pool.Contains(q.Addr()) {
 					pd.Used++
 					if len(pd.Prefixes) < map6Prefixes {

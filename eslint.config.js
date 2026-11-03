@@ -1,12 +1,11 @@
 import js from '@eslint/js';
-import globals from 'globals';
 
 export default [
   { ignores: ['node_modules/'] },
   js.configs.recommended,
   {
     files: ['internal/web/static/**/*.js'],
-    languageOptions: { ecmaVersion: 2024, sourceType: 'script', globals: globals.browser },
+    languageOptions: { ecmaVersion: 2024, sourceType: 'script' },
   },
   {
     // app.js is loaded as a module; theme.js runs before the first paint as a script
@@ -16,6 +15,8 @@ export default [
   {
     files: ['internal/web/static/**/*.js'],
     rules: {
+      // tsc checks every name against the browser library, so ESLint needs no list of globals
+      'no-undef': 'off',
       eqeqeq: ['error', 'always', { null: 'ignore' }],
       'no-implicit-globals': 'error',
       'no-shadow': 'error',

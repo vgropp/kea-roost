@@ -1,5 +1,3 @@
-'use strict';
-
 // Hostnames and option values originate from DHCP clients. All text therefore
 // goes through textContent; this file must never assign innerHTML.
 /**
@@ -63,7 +61,7 @@ function ip6Key(ip) {
   const [head, tail = ''] = address.split('::');
   const first = head ? head.split(':') : [];
   const last = tail ? tail.split(':') : [];
-  const groups = address.includes('::') ? [...first, ...Array(8 - first.length - last.length).fill('0'), ...last] : first;
+  const groups = address.includes('::') ? [...first, ...Array(Math.max(0, 8 - first.length - last.length)).fill('0'), ...last] : first;
   return groups.map(g => g.padStart(4, '0')).join('');
 }
 
@@ -1014,7 +1012,8 @@ function reservation6Dialog(subnets, existing, reload, prefill = {}) {
   const showHints = async () => {
     const run = ++hintRun;
     let notices = [];
-    if (addresses.value.trim() && addresses.value.trim() !== base) {
+    // a check after the dialog closed would only cost Kea calls
+    if (addresses.isConnected && addresses.value.trim() && addresses.value.trim() !== base) {
       try {
         const check = await api('POST', 'dhcp6/reservations/check', collect());
         notices = check.warnings.map(text => h('div', { class: 'note warn hint' }, text,
@@ -1035,7 +1034,8 @@ function reservation6Dialog(subnets, existing, reload, prefill = {}) {
   addresses.addEventListener('input', later);
   subnet.addEventListener('change', () => { showPools(); later(); });
   showPools();
-  showHints();
+  // the first check waits until the dialog is open
+  later();
   showDialog(h('form', {
     onsubmit: async event => {
       event.preventDefault();

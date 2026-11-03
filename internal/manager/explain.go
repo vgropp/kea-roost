@@ -305,12 +305,27 @@ func explain(in explainInput) (*Explanation, error) {
 // containsAddress looks for a whole address, so that 192.0.2.1 does not match
 // 192.0.2.10.
 func containsAddress(text, ip string) bool {
-	if ip == "" {
+	want, err := netip.ParseAddr(ip)
+	if err != nil {
 		return false
 	}
-	return slices.Contains(strings.FieldsFunc(text, func(r rune) bool {
-		return r != '.' && (r < '0' || r > '9')
-	}), ip)
+	// an address is made of hex digits, dots and colons; anything else ends it
+	for _, field := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return r != '.' && r != ':' && (r < '0' || r > '9') && (r < 'a' || r > 'f')
+	}) {
+		// a colon or dot right after an address belongs to the text around it, but
+		// "::" can end an address itself
+		if got, err := netip.ParseAddr(field); err == nil && got == want {
+			return true
+		}
+		if trimmed, ok := strings.CutSuffix(field, ":"); ok && !strings.HasSuffix(field, "::") {
+			field = trimmed
+		}
+		if got, err := netip.ParseAddr(strings.TrimSuffix(field, ".")); err == nil && got == want {
+			return true
+		}
+	}
+	return false
 }
 
 func trimName(name string) string { return strings.TrimSuffix(name, ".") }

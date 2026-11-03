@@ -13,3 +13,6 @@ require (
 	github.com/go-json-experiment/json v0.0.0-20260213210345-44df1a37e875 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 )
+
+// npm puts a Go package of one of its dependencies there
+ignore ./node_modules

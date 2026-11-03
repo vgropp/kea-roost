@@ -37,6 +37,14 @@ Node.js; the types for the check are in `internal/web/types` and are not served:
     npm ci
     npm run lint
 
+`go test ./...` also checks the documentation against the code: links, anchors and
+screenshots, the settings in [Configuration](configuration.md) and the rules in
+[Diagnostics](diagnostics.md). The parsers of Kea answers have fuzz tests, whose seeds
+run with every test; the fuzzing itself runs once a week in CI, or locally with, for
+example:
+
+    go test ./internal/kea -run '^$' -fuzz '^FuzzParseSubnets6$' -fuzztime 1m
+
 The screenshots above are written by a test from invented data:
 
     SCREENSHOT_DIR=docs/screenshots go test -tags e2e -run TestScreenshots ./internal/web

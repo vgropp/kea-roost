@@ -76,7 +76,8 @@ func (m *Manager) Client6(ctx context.Context, address string) (*Client6View, er
 			}
 		}
 	}
-	if reservations, err := m.Reservations6(ctx); err != nil {
+	// the leases fetched above link the reservations, no second round to Kea
+	if reservations, err := m.reservations6(ctx, leases, err); err != nil {
 		v.Warnings = append(v.Warnings, "Reservations unavailable: "+err.Error())
 	} else {
 		for i := range reservations.Reservations {

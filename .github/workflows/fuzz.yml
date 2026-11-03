@@ -1,0 +1,44 @@
+name: fuzz
+
+# The parsers of Kea answers and of what operators type get random input once a
+# week. In every other run the seeds of the fuzz tests run as plain tests.
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { package: ./internal/kea, name: FuzzParsePool6 }
+          - { package: ./internal/kea, name: FuzzParseSubnets6 }
+          - { package: ./internal/manager, name: FuzzWithPrefix }
+          - { package: ./internal/manager, name: FuzzSubnetMap6 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+
+      - name: Fetch the vendor table
+        run: go run ./cmd/oui-update
+
+      - name: Fuzz ${{ matrix.target.name }}
+        run: go test ${{ matrix.target.package }} -run '^$' -fuzz '^${{ matrix.target.name }}$' -fuzztime 5m
+
+      # a failing input is written there; it becomes a regression test once committed
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: fuzz-${{ matrix.target.name }}
+          path: "**/testdata/fuzz/**"

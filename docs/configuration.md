@@ -26,6 +26,12 @@ Kea Roost reads its settings from environment variables, usually `.env`.
 | `MANAGER_TRUSTED_PROXIES` | Proxies whose `X-Forwarded-For` is trusted, comma separated | empty |
 | `MANAGER_DATA_DIR` | Accounts, settings, backups and audit log | `/var/lib/kea-roost`, `/data` in the image |
 
+Two more are read by `compose.yaml` only: `MANAGER_PORT`, the port on the Docker host
+(default `8080`), and `KEA_ROOST_VERSION`, the image tag (default `latest`, see the
+[README](../README.md#install-with-docker-compose)). `ARPMONITOR_DAYS` and the
+`MANAGER_USER` settings of earlier versions are no longer read; the start names them
+when they are still set. The windows of the ARP monitor are on the Settings page now.
+
 All `kea-dhcp6` and peer sockets use the login of `KEA_URL`. `KEA_PASSWORD` and
 `METRICS_PASSWORD` can also come from a file through `KEA_PASSWORD_FILE` and
 `METRICS_PASSWORD_FILE`, such as a Docker secret.

@@ -32,6 +32,9 @@ func (m *Manager) AddPeer6(name string, client *kea.Client) {
 // servers6 are the kea-dhcp6 servers, primary first. The primary carries the name
 // of the IPv4 primary, as both usually run on the same host.
 func (m *Manager) servers6() []server {
+	if m.kea6 == nil {
+		return nil
+	}
 	return append([]server{{m.serverName, m.kea6}}, m.peers6...)
 }
 
@@ -122,6 +125,9 @@ func (m *Manager) ipv6ByMAC(ctx context.Context) (map[string]*IPv6Ref, error) {
 	if m.kea6 == nil {
 		return nil, nil
 	}
+	// only a hint on an IPv4 page: a slow kea-dhcp6 must not hold it up for long
+	ctx, cancel := context.WithTimeout(ctx, serverCheckTimeout)
+	defer cancel()
 	out := map[string]*IPv6Ref{}
 	ref := func(mac string) *IPv6Ref {
 		mac = strings.ToLower(mac)

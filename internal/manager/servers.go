@@ -399,10 +399,17 @@ func compare(primary *kea.Client, want, have *snapshot, v6 bool) []Difference {
 			out = append(out, Difference{Kind: "subnet", Target: name, Change: "extra", Manual: true})
 		}
 	}
+	// a reservation can only be copied into a subnet both servers have; the subnet
+	// itself is the manual difference then
+	shared := sharedSubnetIDs(want, have)
 	for _, key := range sortedKeys(have.hosts) {
 		if _, ok := want.hosts[key]; !ok {
 			h := have.hosts[key]
 			idType, id := h.Identifier()
+			if !shared[h.SubnetID()] {
+				out = append(out, Difference{Kind: "reservation", Target: key, Change: "extra", Manual: true})
+				continue
+			}
 			out = append(out, Difference{Kind: "reservation", Target: key, Change: "extra", apply: func(ctx context.Context, k *kea.Client) error {
 				return k.DeleteReservation(ctx, h.SubnetID(), idType, id)
 			}})
@@ -410,6 +417,12 @@ func compare(primary *kea.Client, want, have *snapshot, v6 bool) []Difference {
 	}
 	for _, key := range sortedKeys(want.hosts) {
 		h := want.hosts[key]
+		if !shared[h.SubnetID()] {
+			if _, ok := have.hosts[key]; !ok {
+				out = append(out, Difference{Kind: "reservation", Target: key, Change: "missing", Manual: true})
+			}
+			continue
+		}
 		if other, ok := have.hosts[key]; !ok {
 			out = append(out, Difference{Kind: "reservation", Target: key, Change: "missing", apply: func(ctx context.Context, k *kea.Client) error {
 				return k.AddReservation(ctx, h)
@@ -553,4 +566,26 @@ func (m *Manager) syncServer(ctx context.Context, user, name string, v6 bool) (*
 			return nil
 		},
 	}), nil
+}
+
+// sharedSubnetIDs are the subnets both servers have under the same id, and 0 for
+// the global reservations.
+func sharedSubnetIDs(want, have *snapshot) map[int64]bool {
+	ids := func(s *snapshot) map[int64]bool {
+		out := map[int64]bool{}
+		for _, subnet := range s.subnets {
+			if id, ok := number(subnet["id"]); ok {
+				out[id] = true
+			}
+		}
+		return out
+	}
+	mine, theirs := ids(want), ids(have)
+	out := map[int64]bool{0: true}
+	for id := range mine {
+		if theirs[id] {
+			out[id] = true
+		}
+	}
+	return out
 }

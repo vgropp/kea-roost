@@ -19,18 +19,21 @@ import (
 type Server struct {
 	sync.Mutex
 
-	Version      string
-	Config       map[string]any
-	HA           []any
-	Stats        map[string]any
-	Leases       []map[string]any
-	Hosts        []map[string]any
-	Persisted    []map[string]any // state of Hosts at the last config-write
-	Calls        []string
-	Fail         map[string]Failure
-	SilentUpdate bool            // reservation-update reports success without doing anything
-	Unknown      map[string]bool // commands answered with result 2
-	User, Pass   string
+	Version string
+	Config  map[string]any
+	HA      []any
+	// DropHostsOnSubnetUpdate acts like a Kea that loses the reservations of a
+	// subnet on subnet-update, which Kea 3.0 does not do.
+	DropHostsOnSubnetUpdate bool
+	Stats                   map[string]any
+	Leases                  []map[string]any
+	Hosts                   []map[string]any
+	Persisted               []map[string]any // state of Hosts at the last config-write
+	Calls                   []string
+	Fail                    map[string]Failure
+	SilentUpdate            bool            // reservation-update reports success without doing anything
+	Unknown                 map[string]bool // commands answered with result 2
+	User, Pass              string
 	// DHCP6 makes the fake a kea-dhcp6: config-get answers with Dhcp6 and the
 	// leases come from Leases6.
 	DHCP6   bool
@@ -217,6 +220,9 @@ func (s *Server) handle(command string, args map[string]any) (int, string, any) 
 		for i, item := range subnets {
 			if sameID(item.(map[string]any)["id"], update["id"]) {
 				subnets[i] = update
+				if s.DropHostsOnSubnetUpdate {
+					s.Hosts = slices.DeleteFunc(s.Hosts, func(h map[string]any) bool { return sameID(h["subnet-id"], update["id"]) })
+				}
 				return 0, "subnet updated", nil
 			}
 		}

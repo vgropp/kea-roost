@@ -53,7 +53,7 @@ func TestReservation6ReachesEveryDHCP6Server(t *testing.T) {
 	in := Reservation6Input{SubnetID: 1, IdentifierType: "duid", Identifier: "00:04:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99",
 		Addresses: []string{"fd00:db8:1::20"}, Hostname: "laptop"}
 	res, err := e.mgr.CreateReservation6(context.Background(), "admin", in)
-	if err != nil || res.Status != StatusOK || !strings.Contains(res.Message, "primary, standby") {
+	if err != nil || res.Status != StatusOK || !strings.Contains(res.Message, "primary (DHCPv6), standby (DHCPv6)") {
 		t.Fatalf("%+v %v", res, err)
 	}
 	if len(fake6.Hosts) != 2 || len(peer.Hosts) != 2 || !peer.HasCall("config-write") {
@@ -83,7 +83,7 @@ func TestFailureOnTheDHCP6PeerIsPartial(t *testing.T) {
 	if err != nil || res.Status != StatusPartial || len(fake6.Hosts) != 2 {
 		t.Fatalf("%+v %v", res, err)
 	}
-	if !strings.Contains(res.Message, "stopped at standby") || !strings.HasPrefix(res.Steps[len(res.Steps)-1].Name, "standby: ") {
+	if !strings.Contains(res.Message, "stopped at standby (DHCPv6)") || !strings.HasPrefix(res.Steps[len(res.Steps)-1].Name, "standby (DHCPv6): ") {
 		t.Errorf("%+v", res)
 	}
 }

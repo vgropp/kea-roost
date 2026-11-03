@@ -78,6 +78,9 @@ func check6(in *Reservation6Input, subnets []kea.Subnet6, hosts []kea.Host, edit
 	if subnet == nil {
 		problems = append(problems, fmt.Sprintf("subnet %d does not exist", in.SubnetID))
 	}
+	if len(in.Addresses) > maxPrefixes {
+		problems = append(problems, fmt.Sprintf("at most %d addresses per reservation", maxPrefixes))
+	}
 	if len(in.Addresses) == 0 && len(in.Prefixes) == 0 {
 		problems = append(problems, "an address or a prefix is missing")
 	}
@@ -320,7 +323,7 @@ func (m *Manager) DeleteReservation6(ctx context.Context, user string, subnetID 
 	return m.runOn(ctx, m.servers6(), change{
 		user:         user,
 		action:       "reservation6-del",
-		target:       withNote(target(subnetID, identifierType, id), hostNote(existing.Hostname(), strings.Join(existing.IPs(), ", "))),
+		target:       withNote(target(subnetID, identifierType, id), hostNote(existing.Hostname(), strings.Join(append(existing.IPs(), existing.Prefixes()...), ", "))),
 		backupReason: "reservation-del",
 		mutate: func(ctx context.Context, k *kea.Client) error {
 			return k.DeleteReservation(ctx, subnetID, identifierType, id)

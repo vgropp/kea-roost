@@ -29,8 +29,8 @@ Leases, Reservations and Subnets get an IPv4|IPv6 switch; the navigation stays t
   and a name. Admins create, edit and delete them, or reserve a lease with
   **Reserve**. A new reservation starts with the prefix of its subnet, and a short
   address such as `::20` is completed with it. The dialog shows where the pools are,
-  warns when an address lies in one and offers a free address outside of them. Changes are backed up, saved and
-  checked like every change.
+  warns when an address lies in one and offers a free address outside of them.
+  Changes are backed up, saved and checked like every change.
 - **Subnets:** prefix, interface, pools, prefix pools, DNS servers, lifetimes and
   counts. Admins edit pools, prefix pools, DNS servers and lifetimes.
 

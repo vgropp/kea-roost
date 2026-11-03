@@ -167,3 +167,21 @@ func TestSubnet6WithoutPreferredLifetime(t *testing.T) {
 		t.Errorf("preferred lifetime set to %v", v)
 	}
 }
+
+// A Kea that dropped the reservations of the subnet is caught by the check.
+func TestSubnetEditNoticesLostReservations(t *testing.T) {
+	e, fake6 := setup6(t)
+	fake6.Lock()
+	fake6.DropHostsOnSubnetUpdate = true
+	fake6.Unlock()
+	res, err := e.mgr.UpdateSubnet6(context.Background(), "admin", 1, subnet6Input())
+	if err != nil || res.Status != StatusPartial || !strings.Contains(res.Steps[len(res.Steps)-1].Message, "1 reservations before and 0 after") {
+		t.Fatalf("%+v %v", res, err)
+	}
+	e.fake.Hosts = []map[string]any{{"subnet-id": 1, "hw-address": "aa:bb:cc:00:00:01", "ip-address": "192.0.2.10"}}
+	e.fake.DropHostsOnSubnetUpdate = true
+	in := SubnetInput{Pools: []string{"192.0.2.100-192.0.2.199"}, Gateways: []string{"192.0.2.1"}, DNSServers: []string{"192.0.2.53"}, ValidLifetime: 7200}
+	if res, err := e.mgr.UpdateSubnet(context.Background(), "admin", 1, in); err != nil || res.Status != StatusPartial {
+		t.Fatalf("IPv4: %+v %v", res, err)
+	}
+}

@@ -304,18 +304,22 @@ func (m *Manager) runOn(ctx context.Context, servers []server, c change) *Result
 	if res.Warnings == nil {
 		res.Warnings = []string{}
 	}
+	if len(servers) == 0 {
+		res.Status, res.Message = StatusFailed, "Nothing was changed: no Kea server is configured for this."
+		return m.finish(c, res)
+	}
 	done := []string{}
 	for _, s := range servers {
 		status, message := m.applyOn(ctx, s, c, res)
 		if status == StatusOK {
-			done = append(done, s.name)
+			done = append(done, label(s.name, m.isV6(s)))
 			continue
 		}
 		res.Status, res.Message = status, message
 		// Nothing is undone: the Servers page shows the difference.
 		if len(done) > 0 {
 			res.Status = StatusPartial
-			res.Message = fmt.Sprintf("Applied on %s, stopped at %s: %s Compare and sync on the Servers page.", strings.Join(done, ", "), s.name, message)
+			res.Message = fmt.Sprintf("Applied on %s, stopped at %s: %s Compare and sync on the Servers page.", strings.Join(done, ", "), label(s.name, m.isV6(s)), message)
 		}
 		return m.finish(c, res)
 	}
@@ -331,7 +335,7 @@ func (m *Manager) applyOn(ctx context.Context, s server, c change, res *Result) 
 	v6 := m.isV6(s)
 	step := func(name string, err error) bool {
 		if v6 && len(m.peers6) > 0 || !v6 && len(m.peers) > 0 {
-			name = s.name + ": " + name
+			name = label(s.name, v6) + ": " + name
 		}
 		st := Step{Name: name, OK: err == nil}
 		if err != nil {
@@ -415,7 +419,12 @@ func (m *Manager) finish(c change, res *Result) *Result {
 	// comes last: the audit entry must not wait for a slow Kea
 	if res.Status != StatusFailed {
 		if err := m.RefreshHostsFile(context.Background()); err != nil {
-			res.Warnings = append(res.Warnings, "Could not update the DNS hosts file: "+err.Error())
+			var stale *staleIPv6Error
+			if errors.As(err, &stale) {
+				res.Warnings = append(res.Warnings, "The DNS hosts file is updated, but its IPv6 entries are from the last refresh: "+stale.err.Error())
+			} else {
+				res.Warnings = append(res.Warnings, "Could not update the DNS hosts file: "+err.Error())
+			}
 		}
 	}
 	return res

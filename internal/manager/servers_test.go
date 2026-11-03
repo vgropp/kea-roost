@@ -482,3 +482,23 @@ func TestSyncReadsLargeSubnetIDs(t *testing.T) {
 		t.Errorf("lifetime %v", got)
 	}
 }
+
+// Reservations of a subnet the peer lacks cannot be copied; they wait for the subnet.
+func TestSyncLeavesReservationsOfMissingSubnets(t *testing.T) {
+	p := setupPair(t)
+	p.fake.Config["subnet4"] = append(p.fake.Config["subnet4"].([]any), map[string]any{"id": 2, "subnet": "198.51.100.0/24"})
+	p.fake.Hosts = append(p.fake.Hosts, map[string]any{"subnet-id": 2, "hw-address": "aa:bb:cc:00:00:22", "ip-address": "198.51.100.10"})
+	var manual []string
+	for _, d := range p.differences(t) {
+		if d.Manual {
+			manual = append(manual, d.Kind+" "+d.Change)
+		}
+	}
+	if !slices.Contains(manual, "subnet missing") || !slices.Contains(manual, "reservation missing") {
+		t.Fatalf("manual: %v", manual)
+	}
+	res, err := p.mgr.SyncServer(context.Background(), "alice", "standby")
+	if err != nil || res.Status != StatusOK || p.peer.HasCall("reservation-add") {
+		t.Fatalf("%+v %v", res, err)
+	}
+}

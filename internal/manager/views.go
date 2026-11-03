@@ -52,14 +52,16 @@ type Manager struct {
 	hostsPath    string
 	hostsDomains []string
 	hostsWriteMu sync.Mutex
-	hostsMu      sync.Mutex
-	hostsErr     error
-	now          func() time.Time
-	writeMu      sync.Mutex
-	arpURL       string
-	settings     atomic.Pointer[Settings]
-	hidden       atomic.Pointer[map[string]bool]
-	apURL        string
+	// hosts6Last are the IPv6 entries of the last hosts file, guarded by hostsWriteMu
+	hosts6Last []kea.Host
+	hostsMu    sync.Mutex
+	hostsErr   error
+	now        func() time.Time
+	writeMu    sync.Mutex
+	arpURL     string
+	settings   atomic.Pointer[Settings]
+	hidden     atomic.Pointer[map[string]bool]
+	apURL      string
 }
 
 // New creates a Manager.

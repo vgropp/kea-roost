@@ -249,6 +249,8 @@ func (m *Manager) UpdateSubnet(ctx context.Context, user string, id int64, in Su
 	if err != nil {
 		return nil, err
 	}
+	// the reservations of the subnet before the change, per server in turn
+	var kept []kea.Host
 	return m.run(ctx, change{
 		user:         user,
 		action:       "subnet4-update",
@@ -262,6 +264,9 @@ func (m *Manager) UpdateSubnet(ctx context.Context, user string, id int64, in Su
 			}
 			if raw == nil {
 				return errors.New("subnet is missing in Kea")
+			}
+			if kept, err = k.Reservations(ctx, id); err != nil {
+				return err
 			}
 			applySubnet(raw, subnet, pools, &in)
 			return k.SubnetUpdate(ctx, raw)
@@ -282,7 +287,9 @@ func (m *Manager) UpdateSubnet(ctx context.Context, user string, id int64, in Su
 			if got := poolTexts(raw); !slices.Equal(got, want) {
 				return fmt.Errorf("pools are %v instead of %v", got, want)
 			}
-			return nil
+			checks := []optionCheck{{"routers", in.Gateways, !slices.Equal(in.Gateways, subnet.Gateways())}, {"domain-name-servers", in.DNSServers, !slices.Equal(in.DNSServers, subnet.DNSServers())}}
+			lifetimes := []lifetimeCheck{{"valid-lifetime", in.ValidLifetime, subnet.ValidLifetime == nil || *subnet.ValidLifetime != in.ValidLifetime}}
+			return verifySubnet(ctx, k, raw, id, kept, checks, lifetimes)
 		},
 	}), nil
 }
@@ -291,4 +298,63 @@ func (m *Manager) UpdateSubnet(ctx context.Context, user string, id int64, in Su
 func (m *Manager) subnetsEditable(ctx context.Context) bool {
 	commands, err := m.source(ctx).client.Commands(ctx)
 	return err == nil && slices.Contains(commands, "subnet4-update")
+}
+
+// optionCheck is an option a subnet edit set; changed tells whether it had to.
+type optionCheck struct {
+	name    string
+	want    []string
+	changed bool
+}
+
+// lifetimeCheck is a lifetime a subnet edit set.
+type lifetimeCheck struct {
+	name    string
+	want    int64
+	changed bool
+}
+
+// optionValues reads an option of a subnet entry as a list.
+func optionValues(raw map[string]any, name string) []string {
+	list, _ := raw["option-data"].([]any)
+	for _, item := range list {
+		if o, ok := item.(map[string]any); ok && o["name"] == name {
+			return splitOption(fmt.Sprint(o["data"]))
+		}
+	}
+	return nil
+}
+
+func splitOption(data string) []string {
+	var out []string
+	for _, part := range strings.Split(data, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// verifySubnet checks after a subnet edit that Kea kept the reservations of the
+// subnet and took the options and lifetimes that changed. Kea 3.0 keeps the
+// reservations on subnet-update; another version that drops them is caught here.
+func verifySubnet(ctx context.Context, k *kea.Client, raw map[string]any, id int64, kept []kea.Host, options []optionCheck, lifetimes []lifetimeCheck) error {
+	after, err := k.Reservations(ctx, id)
+	if err != nil {
+		return err
+	}
+	if len(after) < len(kept) {
+		return fmt.Errorf("the subnet held %d reservations before and %d after the change", len(kept), len(after))
+	}
+	for _, o := range options {
+		if got := optionValues(raw, o.name); o.changed && !slices.Equal(got, o.want) {
+			return fmt.Errorf("%s is %v instead of %v", o.name, got, o.want)
+		}
+	}
+	for _, l := range lifetimes {
+		if got, ok := number(raw[l.name]); l.changed && (!ok || got != l.want) {
+			return fmt.Errorf("%s is %v instead of %d", l.name, raw[l.name], l.want)
+		}
+	}
+	return nil
 }

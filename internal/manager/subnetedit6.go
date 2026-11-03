@@ -120,6 +120,9 @@ func (m *Manager) checkSubnet6(ctx context.Context, id int64, in *Subnet6Input) 
 	subnet := &subnets[i]
 
 	pools, problems := canonicalPools6(in.Pools, subnet.Prefix)
+	if len(in.Pools) > maxPrefixes || len(in.DNSServers) > maxPrefixes {
+		problems = append(problems, fmt.Sprintf("at most %d pools and %d DNS servers", maxPrefixes, maxPrefixes))
+	}
 	problems = append(problems, checkPDPools(in.PDPools)...)
 	if subnet.SharedNetwork != "" {
 		problems = append(problems, fmt.Sprintf("subnet belongs to the shared network %s, which cannot be edited here", subnet.SharedNetwork))
@@ -351,6 +354,8 @@ func (m *Manager) UpdateSubnet6(ctx context.Context, user string, id int64, in S
 		want = append(want, p.Text)
 	}
 	slices.Sort(want)
+	// the reservations of the subnet before the change, per server in turn
+	var kept []kea.Host
 	get := func(ctx context.Context, k *kea.Client) (map[string]any, error) {
 		raw, err := k.Subnet6Get(ctx, id)
 		if err == nil && raw == nil {
@@ -367,6 +372,9 @@ func (m *Manager) UpdateSubnet6(ctx context.Context, user string, id int64, in S
 		mutate: func(ctx context.Context, k *kea.Client) error {
 			raw, err := get(ctx, k)
 			if err != nil {
+				return err
+			}
+			if kept, err = k.Reservations(ctx, id); err != nil {
 				return err
 			}
 			applySubnet6(raw, subnet, pools, &in)
@@ -390,7 +398,12 @@ func (m *Manager) UpdateSubnet6(ctx context.Context, user string, id int64, in S
 					return fmt.Errorf("prefix pools are %v instead of %v", got, wantPD)
 				}
 			}
-			return nil
+			options := []optionCheck{{"dns-servers", in.DNSServers, !slices.Equal(in.DNSServers, subnet.DNSServers())}}
+			lifetimes := []lifetimeCheck{
+				{"valid-lifetime", in.ValidLifetime, subnet.ValidLifetime == nil || *subnet.ValidLifetime != in.ValidLifetime},
+				{"preferred-lifetime", in.PreferredLifetime, in.PreferredLifetime != 0 && (subnet.PreferredLifetime == nil || *subnet.PreferredLifetime != in.PreferredLifetime)},
+			}
+			return verifySubnet(ctx, k, raw, id, kept, options, lifetimes)
 		},
 	}), nil
 }

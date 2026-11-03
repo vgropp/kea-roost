@@ -391,3 +391,24 @@ func TestARPMonitorAddsIPv6(t *testing.T) {
 		t.Errorf("%+v %v", c, err)
 	}
 }
+
+// An IPv4 reservation reaches DNS while kea-dhcp6 is down; the IPv6 names stay.
+func TestHostsFileWithoutDHCP6(t *testing.T) {
+	e, fake6 := setup6(t)
+	dir := t.TempDir()
+	e.mgr.SetHostsDir(dir, []string{"lan"})
+	if err := e.mgr.RefreshHostsFile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fake6.Lock()
+	fake6.Fail["config-get"] = keatest.Failure{Drop: true}
+	fake6.Unlock()
+	e.fake.Hosts = append(e.fake.Hosts, map[string]any{"subnet-id": 1, "hw-address": "00:00:0c:00:00:05", "ip-address": "192.0.2.15", "hostname": "nas"})
+	if err := e.mgr.RefreshHostsFile(context.Background()); err == nil || !strings.Contains(err.Error(), "IPv6 kept") {
+		t.Errorf("error: %v", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "reservations"))
+	if got := string(data); !strings.Contains(got, "192.0.2.15 nas.lan nas") || !strings.Contains(got, "fd00:db8:1::10 printer.lan printer") {
+		t.Errorf("hosts file:\n%s", got)
+	}
+}

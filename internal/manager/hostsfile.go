@@ -3,6 +3,7 @@ package manager
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -161,14 +162,22 @@ func (m *Manager) refreshHosts(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// kea-dhcp6 being away must not hold back the IPv4 names: its last known
+	// entries stay, and the error is reported after the file is written
+	var err6 error
 	if m.kea6 != nil {
 		v6, err := m.namedHosts6(ctx, hosts)
 		if err != nil {
-			return fmt.Errorf("IPv6: %w", err)
+			err6 = &staleIPv6Error{err}
+		} else {
+			m.hosts6Last = v6
 		}
-		hosts = append(hosts, v6...)
+		hosts = append(hosts, m.hosts6Last...)
 	}
-	return writeHostsFile(m.hostsPath, hostsContent(hosts, m.hostsDomains))
+	if err := writeHostsFile(m.hostsPath, hostsContent(hosts, m.hostsDomains)); err != nil {
+		return err
+	}
+	return err6
 }
 
 // WatchHostsFile keeps the file current until ctx ends. Changes through the manager
@@ -191,6 +200,13 @@ func (m *Manager) WatchHostsFile(ctx context.Context) {
 	}
 }
 
+// staleIPv6Error tells that the file was written, with the IPv6 entries of the
+// last refresh because kea-dhcp6 did not answer.
+type staleIPv6Error struct{ err error }
+
+func (e *staleIPv6Error) Error() string { return "IPv6 kept from the last refresh: " + e.err.Error() }
+func (e *staleIPv6Error) Unwrap() error { return e.err }
+
 func (m *Manager) hostsCheck() *HealthCheck {
 	if m.hostsPath == "" {
 		return nil
@@ -198,6 +214,10 @@ func (m *Manager) hostsCheck() *HealthCheck {
 	m.hostsMu.Lock()
 	err := m.hostsErr
 	m.hostsMu.Unlock()
+	var stale *staleIPv6Error
+	if errors.As(err, &stale) {
+		return &HealthCheck{"DNS hosts file", "", SeverityWarn, fmt.Sprintf("IPv4 is current, the IPv6 entries are from the last refresh: %v", stale.err)}
+	}
 	if err != nil {
 		return &HealthCheck{"DNS hosts file", "", SeverityWarn, fmt.Sprintf("not updated: %v", err)}
 	}

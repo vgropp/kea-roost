@@ -24,6 +24,8 @@ jobs:
           apt-get install -y --no-install-recommends -t trixie-backports kea-dhcp4-server kea-dhcp6-server
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
@@ -45,7 +47,7 @@ jobs:
         run: go run ./cmd/oui-update
 
       - run: go vet ./...
-      - run: go test -race ./...
+      - run: go test -race -shuffle=on ./...
       - run: go test -tags kea ./internal/manager
       - run: go test -tags e2e ./internal/web
 
@@ -53,6 +55,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       # The lint tools need a newer Go than the minimum in go.mod.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -76,6 +80,11 @@ jobs:
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
 
+      - name: Check that go.mod and go.sum are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
       - name: Run staticcheck
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 -tags e2e,kea ./...
 
@@ -97,6 +106,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:

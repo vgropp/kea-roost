@@ -19,6 +19,13 @@
         "major"
       ],
       "automerge": false
+    },
+    {
+      "matchManagers": [
+        "npm"
+      ],
+      "minimumReleaseAge": "3 days",
+      "description": "npm packages run code in CI; a compromised release usually surfaces within days"
     }
   ],
   "postUpdateOptions": [

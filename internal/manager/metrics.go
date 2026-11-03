@@ -85,7 +85,6 @@ var (
 		"assigned-pds":                 "pd_assigned_total",
 		"total-pds":                    "pd_total",
 		"declined-addresses":           "addresses_declined_total",
-		"declined-reclaimed-addresses": "addresses_declined_reclaimed_total",
 		"reclaimed-declined-addresses": "addresses_declined_reclaimed_total",
 		"reclaimed-leases":             "addresses_reclaimed_total",
 		"v6-reservation-conflicts":     "reservation_conflicts_total",
@@ -341,7 +340,7 @@ func (m *Manager) Metrics(ctx context.Context) []byte {
 			set.add("roost_config_differences", "Entries that differ from the primary", float64(len(v.Differences)), "server", v.Name)
 		}
 	}
-	if len(m.peers6) > 0 {
+	if m.kea6 != nil && len(m.peers6) > 0 {
 		for _, v := range m.serverList(ctx, true).Servers[1:] {
 			if v.Reachable {
 				set.add("roost_dhcp6_config_differences", "Entries that differ from the primary kea-dhcp6", float64(len(v.Differences)), "server", v.Name)
