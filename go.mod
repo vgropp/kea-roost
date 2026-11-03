@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/boombuler/barcode v1.1.0
-	github.com/chromedp/cdproto v0.159.0
+	github.com/chromedp/cdproto v0.159.1
 	github.com/chromedp/chromedp v0.21.1
 	golang.org/x/crypto v0.58.0
 )
