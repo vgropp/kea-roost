@@ -126,6 +126,45 @@ func globalOptions(section map[string]any) []ReservationOption {
 	return out
 }
 
+// globalsUnchanged tells whether every server already has exactly these global
+// options: the same names, codes and values, compared strictly. When in doubt it
+// says no, which costs a reload but never skips a write.
+func (m *Manager) globalsUnchanged(ctx context.Context, servers []server, v6 bool, in []ReservationOption) bool {
+	key := func(o ReservationOption) string {
+		if o.Name != "" {
+			return o.Name
+		}
+		return fmt.Sprint(o.Code)
+	}
+	want := map[string]ReservationOption{}
+	for _, o := range in {
+		want[key(o)] = o
+	}
+	for _, s := range servers {
+		config, err := s.client.ConfigGet(ctx)
+		if err != nil {
+			return false
+		}
+		section, err := configSection(config, v6)
+		if err != nil {
+			return false
+		}
+		have := globalOptions(section)
+		if len(have) != len(want) {
+			return false
+		}
+		seen := map[string]bool{}
+		for _, o := range have {
+			w, ok := want[key(o)]
+			if !ok || seen[key(o)] || strings.TrimSpace(w.Data) != o.Data || (w.Code != 0 && o.Code != 0 && w.Code != o.Code) {
+				return false
+			}
+			seen[key(o)] = true
+		}
+	}
+	return true
+}
+
 func (m *Manager) globalBlockers(ctx context.Context, servers []server, v6 bool) []string {
 	blockers := []string{}
 	for _, s := range servers {
@@ -242,6 +281,10 @@ func (m *Manager) UpdateGlobalOptions(ctx context.Context, user string, v6 bool,
 	problems = append(problems, m.globalBlockers(ctx, servers, v6)...)
 	if len(problems) > 0 {
 		return nil, &ValidationError{Problems: problems}
+	}
+	if m.globalsUnchanged(ctx, servers, v6, in) {
+		// a reload costs every server a few seconds of DHCP, so it needs a reason
+		return &Result{Status: StatusOK, Message: "Nothing changed: every server already has these global options.", Steps: []Step{}, Warnings: []string{}}, nil
 	}
 	skip, notes := m.skippedConfigTest(ctx, servers, v6)
 	names := make([]string, 0, len(in))

@@ -1330,8 +1330,25 @@ func TestGlobalOptionsWarnBeforeConfigSet(t *testing.T) {
 	if early != 0 {
 		t.Fatal("applied before the confirmation")
 	}
+	// the reload takes a while: the dialog says so and cannot start it twice
+	gate := make(chan struct{})
+	// a failing test still lets the held command finish, or closing the server waits for it
+	release := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(release)
+	b.fake.Lock()
+	b.fake.Hold = map[string]chan struct{}{"config-set": gate}
+	b.fake.Unlock()
 	b.exec(`[...document.querySelectorAll('dialog button')].find(x => x.textContent === 'Reload and save').click()`)
+	b.poll(`[...document.querySelectorAll('dialog button')].some(x => x.textContent.startsWith('Reloading') && x.disabled)`)
+	b.exec(`[...document.querySelectorAll('dialog button')].find(x => x.textContent.startsWith('Reloading')).click()`)
+	release()
 	b.poll(`document.querySelector('dialog h2')?.textContent === 'Change succeeded'`)
+	b.fake.Lock()
+	sets := b.fake.Reconfigured
+	b.fake.Unlock()
+	if sets != 1 {
+		t.Errorf("config-set ran %d times", sets)
+	}
 	b.fake.Lock()
 	got := fmt.Sprint(b.fake.Config["option-data"])
 	b.fake.Unlock()

@@ -129,3 +129,35 @@ func TestGlobalOptionsBlockedByOtherSpaces(t *testing.T) {
 		t.Errorf("%v", err)
 	}
 }
+
+// Saving the options a server already has costs no reload.
+func TestUnchangedGlobalOptionsSkipTheReload(t *testing.T) {
+	e := setup(t)
+	res, err := e.mgr.UpdateGlobalOptions(context.Background(), "u", false, []ReservationOption{{Name: "domain-name-servers", Data: "192.0.2.53"}})
+	if err != nil || res.Status != StatusOK || !strings.Contains(res.Message, "Nothing changed") {
+		t.Fatalf("got %+v %v", res, err)
+	}
+	if e.fake.HasCall("config-set") {
+		t.Error("reloaded without a change")
+	}
+	res, err = e.mgr.UpdateGlobalOptions(context.Background(), "u", false, []ReservationOption{{Name: "domain-name-servers", Data: "192.0.2.53,192.0.2.54"}})
+	if err != nil || res.Status != StatusOK || !e.fake.HasCall("config-set") {
+		t.Fatalf("got %+v %v", res, err)
+	}
+}
+
+func TestGlobalOptionsComparedStrictly(t *testing.T) {
+	e := setup(t)
+	for _, in := range [][]ReservationOption{
+		{{Name: "domain-name-servers", Data: "192.0.2.53,192.0.2.53"}},
+		{{Name: "domain-name-servers", Data: "192.0.2.53"}, {Name: "domain-name", Data: "lan"}},
+		{{Name: "domain-name-servers", Code: 99, Data: "192.0.2.53"}},
+	} {
+		if e.mgr.globalsUnchanged(context.Background(), e.mgr.serversOf(false), false, in) {
+			t.Errorf("%+v counts as unchanged", in)
+		}
+	}
+	if !e.mgr.globalsUnchanged(context.Background(), e.mgr.serversOf(false), false, []ReservationOption{{Name: "domain-name-servers", Code: 6, Data: " 192.0.2.53 "}}) {
+		t.Error("the same option counts as changed")
+	}
+}

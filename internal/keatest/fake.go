@@ -40,6 +40,9 @@ type Server struct {
 	Leases6 []map[string]any
 	// Reconfigured counts the config-set commands that replaced Config.
 	Reconfigured int
+	// Hold keeps a command waiting until its channel is closed, as a slow Kea
+	// would, without blocking other commands meanwhile.
+	Hold map[string]chan struct{}
 }
 
 // Failure makes one command misbehave.
@@ -159,6 +162,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Calls = append(s.Calls, req.Command)
+	if gate := s.Hold[req.Command]; gate != nil {
+		s.Unlock()
+		<-gate
+		s.Lock()
+	}
 
 	if s.Unknown[req.Command] {
 		reply(w, 2, fmt.Sprintf("'%s' command not supported.", req.Command), nil)

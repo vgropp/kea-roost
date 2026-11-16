@@ -1247,22 +1247,29 @@ function globalOptionsDialog(g, path, reload) {
     onsubmit: event => {
       event.preventDefault();
       const body = { options: readRows(list).filter(o => o.name || o.code) };
+      // back to the form, with what was entered
+      const back = h('button', { onclick: () => globalOptionsDialog({ ...g, options: body.options }, path, reload) }, 'Back');
+      // the servers reload one after the other and HA settles in between, which
+      // takes a while: the buttons say so and cannot start it twice
+      const apply = h('button', { class: 'danger solid', onclick: async () => {
+        back.disabled = apply.disabled = true;
+        apply.textContent = 'Reloading the servers…';
+        error.replaceChildren(h('p', { class: 'muted' }, 'Each server reloads in turn and Kea Roost waits for HA to settle, which can take a minute.'));
+        try {
+          showResult(await api('PUT', path, body), reload);
+        } catch (err) {
+          error.replaceChildren(h('div', { class: 'notes' }, (err.problems || [err.message]).map(p => h('div', { class: 'note crit' }, p))));
+          back.disabled = apply.disabled = false;
+          apply.textContent = 'Reload and save';
+        }
+      } }, 'Reload and save');
       // nothing is applied before the operator has read what config-set does
       showDialog(h('h2', {}, 'Reload the whole configuration?'),
         h('div', { class: 'notes' },
           h('div', { class: 'note warn' }, 'Kea has no command for global options, so Kea Roost sends the whole configuration with config-set, to the primary first and then to each peer. Each server reloads completely: it answers no DHCP request for a few seconds, and an HA pair synchronizes its leases again. Leases and reservations stay.'),
           g.notes.map(n => h('div', { class: 'note' }, n))),
         error,
-        h('div', { class: 'dialog-actions' },
-          // back to the form, with what was entered
-          h('button', { onclick: () => globalOptionsDialog({ ...g, options: body.options }, path, reload) }, 'Back'),
-          h('button', { class: 'danger solid', onclick: async () => {
-            try {
-              showResult(await api('PUT', path, body), reload);
-            } catch (err) {
-              error.replaceChildren(h('div', { class: 'notes' }, (err.problems || [err.message]).map(p => h('div', { class: 'note crit' }, p))));
-            }
-          } }, 'Reload and save')));
+        h('div', { class: 'dialog-actions' }, back, apply));
     },
   },
     h('h2', {}, 'Edit global options'),
