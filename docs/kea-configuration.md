@@ -51,6 +51,32 @@ and comments are lost. Editing a subnet keeps the reservations inside it. Writes
 refused while a binary option has no value, such as `vendor-encapsulated-options` given
 as hex, because `config-write` would erase it.
 
+## Global options
+
+Options for every client, such as `domain-name-servers`, are edited above the subnets
+on the Network page. A client class, subnet, pool or reservation that sets the same
+option wins over them. A subnet that only inherits its gateway or DNS servers shows
+them with the level they come from, and its edit form leaves the field empty with the
+inherited value as a hint: saving never copies an inherited value into the subnet, and
+clearing the field lets the subnet inherit again.
+
+Kea has no command for this part of its configuration, so Kea Roost sends the whole
+configuration with `config-set`, to the primary first and then to each peer, each
+with its own configuration. Each server reloads completely and answers no DHCP request
+for a few seconds; an HA pair synchronizes its leases again. Leases and reservations
+stay, and Kea refuses an invalid option without changing anything. The dialog says
+this before saving.
+
+From Kea 3.0.4 on, Kea Roost checks the configuration with `config-test` first. Older
+releases skip it, because there `config-test` left the HA listener closed (ISC issues
+#4145 and #4616), and the dialog names those servers. Each server is then given time
+to return to its normal HA state before the next one reloads, so the partners of a
+pair never reload at once.
+
+The configuration sent back holds what `config-get` returned, including the passwords
+of databases and hooks in plain text, as Kea 3.0 reports them. Global options in
+another option space, such as vendor options, cannot be edited here.
+
 ## kea-dhcp6
 
 For [IPv6](ipv6.md), `kea-dhcp6` needs the same: a control socket with the same login on

@@ -650,3 +650,30 @@ func TestRealKeaSubnetUpdateKeepsReservations(t *testing.T) {
 		t.Fatalf("pools: %s", pools)
 	}
 }
+
+// config-set replaces the whole configuration; the reservations stay, also after a
+// restart, and an invalid option is refused without a change.
+func TestRealKeaGlobalOptions(t *testing.T) {
+	s := startKea(t, dnsOption)
+	ctx := context.Background()
+	s.ok(s.mgr.CreateReservation(ctx, "test", ReservationInput{SubnetID: 1, IdentifierType: "hw-address", Identifier: "02:00:00:00:01:07", IPAddress: "192.0.2.27", Hostname: "scoped"}))
+	s.ok(s.mgr.UpdateGlobalOptions(ctx, "test", false, []ReservationOption{{Name: "domain-name-servers", Data: "192.0.2.54, 192.0.2.55"}, {Name: "domain-name", Data: "lan"}}))
+	s.restart()
+	got, err := s.mgr.GlobalOptions(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(got.Options) != "[{domain-name-servers 6 192.0.2.54, 192.0.2.55} {domain-name 15 lan}]" {
+		t.Errorf("options after restart: %v", got.Options)
+	}
+	if s.host("192.0.2.27") == nil || s.host("192.0.2.10") == nil {
+		t.Error("a reservation is gone")
+	}
+	res, err := s.mgr.UpdateGlobalOptions(ctx, "test", false, []ReservationOption{{Name: "domain-name-servers", Data: "not-an-address"}})
+	if err != nil || res.Status != StatusFailed {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if after, _ := s.mgr.GlobalOptions(ctx, false); fmt.Sprint(after.Options) != fmt.Sprint(got.Options) {
+		t.Errorf("a refused change touched the options: %v", after.Options)
+	}
+}

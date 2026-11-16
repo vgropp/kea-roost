@@ -99,6 +99,9 @@ func (s Subnet6) DNSServers() []string {
 	return Subnet{Options: s.Options}.option("dns-servers", 23)
 }
 
+// OwnDNSServers is the dns-servers option the subnet sets itself.
+func (s Subnet6) OwnDNSServers() []string { return ownOption(s.Options, "dns-servers", 23) }
+
 type rawPDPool struct {
 	Prefix       string `json:"prefix"`
 	PrefixLen    int    `json:"prefix-len"`
@@ -186,7 +189,7 @@ func buildSubnet6(raw rawSubnet6, global, shared rawScope6) (Subnet6, error) {
 		Interface:         raw.Interface,
 		Pools:             []Pool6{},
 		PDPools:           []PDPool{},
-		Options:           mergeOptionsIn("dhcp6", global.OptionData, shared.OptionData, raw.OptionData),
+		Options:           mergeSourced("dhcp6", subnetLevels, global.OptionData, shared.OptionData, raw.OptionData),
 		ValidLifetime:     firstSet(raw.ValidLifetime, shared.ValidLifetime, global.ValidLifetime),
 		PreferredLifetime: firstSet(raw.Preferred, shared.Preferred, global.Preferred),
 	}

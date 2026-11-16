@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
-	"strconv"
 	"strings"
 )
 
@@ -34,6 +33,8 @@ type Option struct {
 	Name string `json:"name"`
 	Code int64  `json:"code"`
 	Data string `json:"data"`
+	// Source is the level that sets the option, such as global or subnet, where known.
+	Source string `json:"source,omitempty"`
 }
 
 // Subnet is a configured IPv4 subnet.
@@ -68,6 +69,37 @@ func (s Subnet) Gateways() []string { return s.option("routers", 3) }
 
 // DNSServers returns the domain-name-servers option.
 func (s Subnet) DNSServers() []string { return s.option("domain-name-servers", 6) }
+
+// OwnGateways and OwnDNSServers are the values the subnet sets itself, without
+// what it inherits.
+func (s Subnet) OwnGateways() []string { return ownOption(s.Options, "routers", 3) }
+
+// OwnDNSServers is the domain-name-servers option the subnet sets itself.
+func (s Subnet) OwnDNSServers() []string { return ownOption(s.Options, "domain-name-servers", 6) }
+
+func ownOption(options []Option, name string, code int64) []string {
+	for _, o := range options {
+		if (o.Name == name || o.Code == code) && o.Source == SourceSubnet {
+			var out []string
+			for _, v := range strings.Split(o.Data, ",") {
+				if v = strings.TrimSpace(v); v != "" {
+					out = append(out, v)
+				}
+			}
+			return out
+		}
+	}
+	return nil
+}
+
+// The levels an option of a subnet can come from.
+const (
+	SourceGlobal        = "global"
+	SourceSharedNetwork = "shared network"
+	SourceSubnet        = "subnet"
+)
+
+var subnetLevels = []string{SourceGlobal, SourceSharedNetwork, SourceSubnet}
 
 // PoolContaining returns the pool holding ip, or nil.
 func (s Subnet) PoolContaining(ip netip.Addr) *Pool {
@@ -307,7 +339,7 @@ func buildSubnet(raw rawSubnet, network string, global, shared rawScope) (Subnet
 		Prefix:        prefix.Masked(),
 		SharedNetwork: network,
 		Pools:         []Pool{},
-		Options:       mergeOptions(global.OptionData, shared.OptionData, raw.OptionData),
+		Options:       mergeSourced("dhcp4", subnetLevels, global.OptionData, shared.OptionData, raw.OptionData),
 		ValidLifetime: firstSet(raw.ValidLifetime, shared.ValidLifetime, global.ValidLifetime),
 	}
 	for i, rp := range raw.Pools {
@@ -339,23 +371,71 @@ func mergeOptions(scopes ...[]rawOption) []Option { return mergeOptionsIn("dhcp4
 // mergeOptionsIn resolves inheritance for the options of one space; an option
 // without space belongs to the standard one.
 func mergeOptionsIn(space string, scopes ...[]rawOption) []Option {
+	return mergeSourced(space, nil, scopes...)
+}
+
+// standardOptions are the codes of the options Kea Roost edits or suggests, so
+// that an option given only by name and the same one given only by code are
+// recognized as one. Kea itself reports both in config-get.
+var standardOptions = map[string]map[string]int64{
+	"dhcp4": {"routers": 3, "domain-name-servers": 6, "domain-name": 15, "interface-mtu": 26,
+		"ntp-servers": 42, "tftp-server-name": 66, "boot-file-name": 67, "domain-search": 119, "time-offset": 2},
+	"dhcp6": {"dns-servers": 23, "domain-search": 24, "sntp-servers": 31, "information-refresh-time": 32},
+}
+
+// withStandardName fills in the name or code of a standard option that has only one.
+func withStandardName(space string, o Option) Option {
+	for name, code := range standardOptions[space] {
+		switch {
+		case o.Name == "" && o.Code == code:
+			o.Name = name
+		case o.Code == 0 && o.Name == name:
+			o.Code = code
+		}
+	}
+	return o
+}
+
+// mergeSourced is mergeOptionsIn that names the level of each option; levels
+// matches scopes.
+func mergeSourced(space string, levels []string, scopes ...[]rawOption) []Option {
 	out := []Option{}
-	index := map[string]int{}
-	for _, scope := range scopes {
+	// an option can be named by its name, its code or both, so either one finds it
+	byName, byCode := map[string]int{}, map[int64]int{}
+	for level, scope := range scopes {
+		source := ""
+		if level < len(levels) {
+			source = levels[level]
+		}
 		for _, o := range scope {
 			if o.Space != "" && o.Space != space {
 				continue
 			}
-			key := o.Name
-			if key == "" {
-				key = strconv.FormatInt(o.Code, 10)
+			i, ok := byName[o.Name]
+			if !ok || o.Name == "" {
+				i, ok = byCode[o.Code]
+				ok = ok && o.Code != 0
 			}
-			if i, ok := index[key]; ok {
-				out[i] = Option{o.Name, o.Code, o.Data}
-				continue
+			entry := withStandardName(space, Option{o.Name, o.Code, o.Data, source})
+			if ok {
+				// keep what the weaker level knew of the name or code
+				if entry.Name == "" {
+					entry.Name = out[i].Name
+				}
+				if entry.Code == 0 {
+					entry.Code = out[i].Code
+				}
+				out[i] = entry
+			} else {
+				i = len(out)
+				out = append(out, entry)
 			}
-			index[key] = len(out)
-			out = append(out, Option{o.Name, o.Code, o.Data})
+			if entry.Name != "" {
+				byName[entry.Name] = i
+			}
+			if entry.Code != 0 {
+				byCode[entry.Code] = i
+			}
 		}
 	}
 	return out

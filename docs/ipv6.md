@@ -19,7 +19,7 @@ It uses the login of `KEA_URL`. For an HA standby, see
 
 ## In the interface
 
-Leases, Reservations and Subnets get an IPv4|IPv6 switch; the navigation stays the same.
+Leases, Reservations and Network get an IPv4|IPv6 switch; the navigation stays the same.
 
 - **Leases:** address or delegated prefix, DUID, MAC, name, access point, state and
   expiry. Admins delete them on every `kea-dhcp6`, like IPv4 leases. A click on an
@@ -31,8 +31,9 @@ Leases, Reservations and Subnets get an IPv4|IPv6 switch; the navigation stays t
   address such as `::20` is completed with it. The dialog shows where the pools are,
   warns when an address lies in one and offers a free address outside of them.
   Changes are backed up, saved and checked like every change.
-- **Subnets:** prefix, interface, pools, prefix pools, DNS servers, lifetimes and
-  counts. Admins edit pools, prefix pools, DNS servers and lifetimes.
+- **Network:** the global options of `kea-dhcp6`, then each subnet with its prefix,
+  interface, pools, prefix pools, DNS servers, lifetimes and counts. Admins edit the
+  global options, and pools, prefix pools, DNS servers and lifetimes of a subnet.
 
 ![IPv6 subnet with its pool as 256 squares, its prefix pool with a square per prefix, and a reservation outside of the pools](screenshots/subnets-ipv6.png)
 

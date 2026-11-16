@@ -201,10 +201,10 @@ func applySubnet(raw map[string]any, subnet *kea.Subnet, pools []kea.Pool, in *S
 	}
 	raw["pools"] = list
 
-	if !slices.Equal(in.Gateways, subnet.Gateways()) {
+	if optionChanged(in.Gateways, subnet.OwnGateways(), subnet.Gateways()) {
 		setSubnetOption(raw, "routers", in.Gateways)
 	}
-	if !slices.Equal(in.DNSServers, subnet.DNSServers()) {
+	if optionChanged(in.DNSServers, subnet.OwnDNSServers(), subnet.DNSServers()) {
 		setSubnetOption(raw, "domain-name-servers", in.DNSServers)
 	}
 	if subnet.ValidLifetime == nil || *subnet.ValidLifetime != in.ValidLifetime {
@@ -287,7 +287,10 @@ func (m *Manager) UpdateSubnet(ctx context.Context, user string, id int64, in Su
 			if got := poolTexts(raw); !slices.Equal(got, want) {
 				return fmt.Errorf("pools are %v instead of %v", got, want)
 			}
-			checks := []optionCheck{{"routers", in.Gateways, !slices.Equal(in.Gateways, subnet.Gateways())}, {"domain-name-servers", in.DNSServers, !slices.Equal(in.DNSServers, subnet.DNSServers())}}
+			checks := []optionCheck{
+				{"routers", in.Gateways, optionChanged(in.Gateways, subnet.OwnGateways(), subnet.Gateways())},
+				{"domain-name-servers", in.DNSServers, optionChanged(in.DNSServers, subnet.OwnDNSServers(), subnet.DNSServers())},
+			}
 			lifetimes := []lifetimeCheck{{"valid-lifetime", in.ValidLifetime, subnet.ValidLifetime == nil || *subnet.ValidLifetime != in.ValidLifetime}}
 			return verifySubnet(ctx, k, raw, id, kept, checks, lifetimes)
 		},
@@ -298,6 +301,17 @@ func (m *Manager) UpdateSubnet(ctx context.Context, user string, id int64, in Su
 func (m *Manager) subnetsEditable(ctx context.Context) bool {
 	commands, err := m.source(ctx).client.Commands(ctx)
 	return err == nil && slices.Contains(commands, "subnet4-update")
+}
+
+// optionChanged tells whether a subnet option has to be written. The form shows
+// what the subnet sets itself, and an empty field keeps inheriting. Values equal to
+// the inherited ones count as unchanged as well, so that they are not pinned to
+// the subnet just because they were sent back.
+func optionChanged(in, own, effective []string) bool {
+	if slices.Equal(in, own) {
+		return false
+	}
+	return len(own) > 0 || !slices.Equal(in, effective)
 }
 
 // optionCheck is an option a subnet edit set; changed tells whether it had to.

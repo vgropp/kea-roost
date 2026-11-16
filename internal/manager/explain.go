@@ -116,21 +116,36 @@ func optionKey(o kea.Option) (key, name string) {
 
 // effectiveOptions applies the layers from the weakest to the strongest.
 func effectiveOptions(layers []kea.OptionLayer) []EffectiveOption {
-	index := map[string]int{}
+	// an option can be named by its name, its code or both, so either one finds it
+	byName, byCode := map[string]int{}, map[int64]int{}
 	out := []EffectiveOption{}
 	for _, layer := range layers {
 		for _, o := range layer.Options {
-			key, name := optionKey(o)
-			i, ok := index[key]
-			if !ok {
-				index[key] = len(out)
-				out = append(out, EffectiveOption{Name: name, Data: o.Data, Source: layer.Source, Overrides: []OptionSource{}})
-				continue
+			_, name := optionKey(o)
+			i, ok := byName[o.Name]
+			if !ok || o.Name == "" {
+				i, ok = byCode[o.Code]
+				ok = ok && o.Code != 0
 			}
-			prev := out[i]
-			prev.Overrides = slices.Insert(prev.Overrides, 0, OptionSource{prev.Source, prev.Data})
-			prev.Data, prev.Source = o.Data, layer.Source
-			out[i] = prev
+			if !ok {
+				i = len(out)
+				out = append(out, EffectiveOption{Name: name, Data: o.Data, Source: layer.Source, Overrides: []OptionSource{}})
+			} else {
+				prev := out[i]
+				prev.Overrides = slices.Insert(prev.Overrides, 0, OptionSource{prev.Source, prev.Data})
+				prev.Data, prev.Source = o.Data, layer.Source
+				// a name is clearer than "option 6"
+				if o.Name != "" {
+					prev.Name = o.Name
+				}
+				out[i] = prev
+			}
+			if o.Name != "" {
+				byName[o.Name] = i
+			}
+			if o.Code != 0 {
+				byCode[o.Code] = i
+			}
 		}
 	}
 	slices.SortFunc(out, func(a, b EffectiveOption) int { return strings.Compare(a.Name, b.Name) })

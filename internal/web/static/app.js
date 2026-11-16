@@ -569,8 +569,8 @@ function readRows(list) {
   return [...list.children].map(row => rowReaders.get(row)());
 }
 
-function optionRow(list, opt) {
-  const name = h('input', { class: 'mono-input', placeholder: 'Name, e.g. ntp-servers', 'aria-label': 'Option name', value: opt.name || '', disabled: !opt.name && !!opt.code });
+function optionRow(list, opt, names) {
+  const name = h('input', { class: 'mono-input', placeholder: 'Name, e.g. ntp-servers', 'aria-label': 'Option name', value: opt.name || '', disabled: !opt.name && !!opt.code, list: names });
   const data = h('input', { class: 'mono-input', placeholder: 'Value', 'aria-label': 'Option value', value: opt.data || '' });
   const row = h('div', { class: 'option-row' }, name, data, h('button', { type: 'button', class: 'small', onclick: () => row.remove() }, '×'));
   rowReaders.set(row, () => ({ name: name.value.trim(), code: opt.code || 0, data: data.value }));
@@ -1180,7 +1180,6 @@ function subnet6Map(m) {
 
 function subnet6Card(s, editable, reload) {
   const dl = (key, value) => [h('dt', {}, key), h('dd', {}, value)];
-  const list = v => v && v.length ? v.join(', ') : '–';
   return h('div', {},
     h('h2', {}, `Subnet ${s.id}`, meta.writable && editable && !s.sharedNetwork
       ? h('button', { class: 'small subnet-edit', onclick: () => subnetDialog(s, reload, true) }, 'Edit') : null),
@@ -1191,7 +1190,7 @@ function subnet6Card(s, editable, reload) {
           dl('Subnet ID', String(s.id)),
           s.sharedNetwork ? dl('Shared Network', s.sharedNetwork) : null,
           s.interface ? dl('Interface', s.interface) : null,
-          dl('DNS', list(s.dnsServers)),
+          dl('DNS', inheritable(s, 'dns-servers', s.dnsServers)),
           dl('Valid lifetime', s.validLifetime != null ? fmtDuration(s.validLifetime) : '–'),
           dl('Preferred lifetime', s.preferredLifetime != null ? fmtDuration(s.preferredLifetime) : '–'),
           dl('Active leases', h('a', { href: `#/leases?v=6&q=${encodeURIComponent(s.subnet)}` }, fmtCount(s.leases))),
@@ -1209,14 +1208,70 @@ function subnets6Page() {
   const load = async () => {
     try {
       const list = await api('GET', 'dhcp6/subnets');
-      body.replaceChildren(...[notes(list.warnings), ...list.subnets.map(s => subnet6Card(s, list.editable, load))].filter(Boolean));
+      body.replaceChildren(...[notes(list.warnings), globalOptionsPanel(true, load), ...list.subnets.map(s => subnet6Card(s, list.editable, load))].filter(Boolean));
       if (!list.subnets.length) body.append(h('div', { class: 'panel empty' }, 'No IPv6 subnets configured'));
     } catch (err) {
       body.replaceChildren(errorNote(err));
     }
   };
-  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Subnets'), familySwitch('subnets', true), h('button', { onclick: load }, 'Refresh')), body);
+  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Network'), familySwitch('subnets', true), h('button', { onclick: load }, 'Refresh')), body);
   load();
+}
+
+// The global options of a family. Kea has no command for them, so a change sends
+// the whole configuration with config-set, which the dialog says before saving.
+function globalOptionsPanel(v6, reload) {
+  const path = v6 ? 'dhcp6/options/global' : 'options/global';
+  const el = h('div', {}, h('p', { class: 'muted' }, 'Loading global options…'));
+  api('GET', path).then(g => {
+    const edit = meta.writable && !g.blockers.length
+      ? h('button', { class: 'small subnet-edit global-edit', onclick: () => globalOptionsDialog(g, path, reload) }, 'Edit') : null;
+    el.replaceChildren(
+      h('h2', {}, 'Global options', edit),
+      h('div', { class: 'panel pad' },
+        g.options.length
+          ? h('dl', { class: 'kv' }, g.options.flatMap(o => [h('dt', {}, o.name || `Option ${o.code}`), h('dd', { class: 'mono' }, o.data || '–')]))
+          : h('p', { class: 'muted' }, 'None. Options set here apply to every client unless a client class, subnet, pool or reservation sets them.'),
+        g.blockers.length ? h('div', { class: 'notes' }, g.blockers.map(b => h('div', { class: 'note warn' }, b))) : null));
+  }).catch(err => el.replaceChildren(errorNote(err)));
+  return el;
+}
+
+function globalOptionsDialog(g, path, reload) {
+  const names = 'global-option-names';
+  const list = h('div', {});
+  g.options.forEach(o => optionRow(list, o, names));
+  const error = h('div');
+  const save = h('button', { class: 'primary', type: 'submit' }, 'Save');
+  showDialog(h('form', {
+    onsubmit: event => {
+      event.preventDefault();
+      const body = { options: readRows(list).filter(o => o.name || o.code) };
+      // nothing is applied before the operator has read what config-set does
+      showDialog(h('h2', {}, 'Reload the whole configuration?'),
+        h('div', { class: 'notes' },
+          h('div', { class: 'note warn' }, 'Kea has no command for global options, so Kea Roost sends the whole configuration with config-set, to the primary first and then to each peer. Each server reloads completely: it answers no DHCP request for a few seconds, and an HA pair synchronizes its leases again. Leases and reservations stay.'),
+          g.notes.map(n => h('div', { class: 'note' }, n))),
+        error,
+        h('div', { class: 'dialog-actions' },
+          // back to the form, with what was entered
+          h('button', { onclick: () => globalOptionsDialog({ ...g, options: body.options }, path, reload) }, 'Back'),
+          h('button', { class: 'danger solid', onclick: async () => {
+            try {
+              showResult(await api('PUT', path, body), reload);
+            } catch (err) {
+              error.replaceChildren(h('div', { class: 'notes' }, (err.problems || [err.message]).map(p => h('div', { class: 'note crit' }, p))));
+            }
+          } }, 'Reload and save')));
+    },
+  },
+    h('h2', {}, 'Edit global options'),
+    h('p', { class: 'muted' }, 'A name Kea knows and its value, such as domain-name-servers and 192.0.2.53, 192.0.2.54. A client class, subnet, pool or reservation that sets the same option wins over it.'),
+    h('datalist', { id: names }, g.suggestions.map(n => h('option', { value: n }))),
+    list,
+    h('div', {}, h('button', { type: 'button', class: 'small', onclick: () => optionRow(list, {}, names) }, 'Add option')),
+    error,
+    h('div', { class: 'dialog-actions' }, h('button', { type: 'button', onclick: closeDialog }, 'Cancel'), save)));
 }
 
 pages.subnets = params => {
@@ -1225,13 +1280,13 @@ pages.subnets = params => {
   const load = async () => {
     try {
       const list = await api('GET', 'subnets');
-      body.replaceChildren(...[notes(list.warnings), ...list.subnets.map(s => subnetCard(s, list.editable, load))].filter(Boolean));
+      body.replaceChildren(...[notes(list.warnings), globalOptionsPanel(false, load), ...list.subnets.map(s => subnetCard(s, list.editable, load))].filter(Boolean));
       if (!list.subnets.length) body.append(h('div', { class: 'panel empty' }, 'No subnets configured'));
     } catch (err) {
       body.replaceChildren(errorNote(err));
     }
   };
-  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Subnets'), familySwitch('subnets', false), h('button', { onclick: load }, 'Refresh')), body);
+  view.replaceChildren(h('div', { class: 'page-head' }, h('h1', {}, 'Network'), familySwitch('subnets', false), h('button', { onclick: load }, 'Refresh')), body);
   load();
 };
 
@@ -1332,14 +1387,39 @@ function poolRow(list, value, v6) {
   list.append(row);
 }
 
+// optionSource is the level an option of a subnet comes from, such as global. Kea
+// can report an option by its code alone, so the code counts as well.
+const OPTION_CODES = { routers: 3, 'domain-name-servers': 6, 'dns-servers': 23 };
+
+function optionSource(s, name) {
+  return s.options.find(o => o.name === name || (o.code && o.code === OPTION_CODES[name]))?.source || '';
+}
+
+// inheritable shows a value of a subnet and, when the subnet does not set it
+// itself, where it comes from.
+function inheritable(s, name, values) {
+  const source = optionSource(s, name);
+  const text = values && values.length ? values.join(', ') : '–';
+  return source && source !== 'subnet' ? [text, ' ', h('span', { class: 'tag', title: `Not set in the subnet, inherited from the ${source} level` }, source)] : text;
+}
+
+// ownInput is a field for what the subnet sets itself; the inherited value is
+// its placeholder, so that clearing the field falls back to it visibly.
+function ownInput(s, name, values) {
+  const source = optionSource(s, name);
+  const own = source === 'subnet' ? values : [];
+  const inherited = source && source !== 'subnet' ? `inherited from ${source}: ${values.join(', ')}` : '';
+  return h('input', { class: 'mono-input', value: (own || []).join(', '), placeholder: inherited });
+}
+
 // subnetDialog edits a subnet of kea-dhcp4 or, with v6, of kea-dhcp6. IPv6 has no
 // gateway option, but a preferred lifetime.
 function subnetDialog(s, reload, v6 = false) {
   const base = v6 ? 'dhcp6/subnets/' : 'subnets/';
   const pools = h('div', {});
   s.pools.forEach(p => poolRow(pools, p.pool, v6));
-  const gateways = h('input', { class: 'mono-input', value: (s.gateways || []).join(', ') });
-  const dns = h('input', { class: 'mono-input', value: (s.dnsServers || []).join(', ') });
+  const gateways = ownInput(s, 'routers', s.gateways || []);
+  const dns = ownInput(s, v6 ? 'dns-servers' : 'domain-name-servers', s.dnsServers || []);
   const lifetime = h('input', { class: 'mono-input', type: 'number', min: '1', value: s.validLifetime ?? '' });
   const preferred = h('input', { class: 'mono-input', type: 'number', min: '1', value: s.preferredLifetime ?? '' });
   const pdPools = h('div', {});
@@ -1400,7 +1480,6 @@ function subnetDialog(s, reload, v6 = false) {
 
 function subnetCard(s, editable, reload) {
   const dl = (key, value) => [h('dt', {}, key), h('dd', {}, value)];
-  const list = v => v && v.length ? v.join(', ') : '–';
   return h('div', {},
     h('h2', {}, `Subnet ${s.id}`, meta.writable && editable && !s.sharedNetwork
       ? h('button', { class: 'small subnet-edit', onclick: () => subnetDialog(s, reload) }, 'Edit') : null),
@@ -1410,8 +1489,8 @@ function subnetCard(s, editable, reload) {
           dl('CIDR', s.subnet),
           dl('Subnet ID', String(s.id)),
           s.sharedNetwork ? dl('Shared Network', s.sharedNetwork) : null,
-          dl('Gateway', list(s.gateways)),
-          dl('DNS', list(s.dnsServers)),
+          dl('Gateway', inheritable(s, 'routers', s.gateways)),
+          dl('DNS', inheritable(s, 'domain-name-servers', s.dnsServers)),
           dl('Lease lifetime', s.validLifetime != null ? fmtDuration(s.validLifetime) : '–'),
           s.outsidePools != null ? dl('Leases outside pools', fmtCount(s.outsidePools)) : null,
           dl('Reservations', h('a', { href: `#/reservations?subnet=${encodeURIComponent(s.subnet)}` }, fmtCount(s.reservations))),
@@ -1870,6 +1949,7 @@ function client6Body(c) {
         c.device.ipv6.length ? ['IPv6', c.device.ipv6.map(ip => h('div', { class: 'mono' }, ip))] : null,
         c.device.addresses.length ? ['IPv4', c.device.addresses.map(ip => h('div', {}, ip))] : null,
       ], 'Not seen'),
+      l?.wifi ? clientCard('WiFi', [['Access point', l.wifi.accessPoint], ['Network', l.wifi.interface], ['Signal', `${l.wifi.signal} dBm`], ['Connected', fmtDuration(l.wifi.connectedTime)]]) : null,
       clientCard('IPv4 device', device && [
         ['Name', device.hostname || '–'],
         ['Address', clientLink(device.ipAddress)],
@@ -1949,7 +2029,6 @@ function checkSummary(checks, open, expanded) {
   details.open = expanded;
   return details;
 }
-      l?.wifi ? clientCard('WiFi', [['Access point', l.wifi.accessPoint], ['Network', l.wifi.interface], ['Signal', `${l.wifi.signal} dBm`], ['Connected', fmtDuration(l.wifi.connectedTime)]]) : null,
 
 // Shows what the review looks at, also while it finds nothing.
 function ruleSummary(rules, expanded, remember) {
@@ -2336,7 +2415,7 @@ async function start() {
   const groups = [
     [['dashboard', 'Dashboard']],
     [['leases', 'Leases'], ['reservations', 'Reservations'], meta.devices && ['devices', 'Devices']],
-    [['classes', 'Classes'], ['subnets', 'Subnets']],
+    [['classes', 'Classes'], ['subnets', 'Network']],
     [['health', 'Health']],
     [['servers', 'Servers'], meta.writable && ['audit', 'Audit log']],
     [meta.writable && ['settings', 'Settings']],

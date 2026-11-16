@@ -295,7 +295,7 @@ func applySubnet6(raw map[string]any, subnet *kea.Subnet6, pools []kea.Pool6, in
 		raw["pd-pools"] = pdList
 	}
 
-	if !slices.Equal(in.DNSServers, subnet.DNSServers()) {
+	if optionChanged(in.DNSServers, subnet.OwnDNSServers(), subnet.DNSServers()) {
 		setSubnetOption(raw, "dns-servers", in.DNSServers)
 	}
 	if subnet.ValidLifetime == nil || *subnet.ValidLifetime != in.ValidLifetime {
@@ -398,7 +398,7 @@ func (m *Manager) UpdateSubnet6(ctx context.Context, user string, id int64, in S
 					return fmt.Errorf("prefix pools are %v instead of %v", got, wantPD)
 				}
 			}
-			options := []optionCheck{{"dns-servers", in.DNSServers, !slices.Equal(in.DNSServers, subnet.DNSServers())}}
+			options := []optionCheck{{"dns-servers", in.DNSServers, optionChanged(in.DNSServers, subnet.OwnDNSServers(), subnet.DNSServers())}}
 			lifetimes := []lifetimeCheck{
 				{"valid-lifetime", in.ValidLifetime, subnet.ValidLifetime == nil || *subnet.ValidLifetime != in.ValidLifetime},
 				{"preferred-lifetime", in.PreferredLifetime, in.PreferredLifetime != 0 && (subnet.PreferredLifetime == nil || *subnet.PreferredLifetime != in.PreferredLifetime)},

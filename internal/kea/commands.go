@@ -92,6 +92,19 @@ func (c *Client) ConfigGet(ctx context.Context) (json.RawMessage, error) {
 	return r.Arguments, nil
 }
 
+// ConfigTest lets Kea check a complete configuration without applying it.
+func (c *Client) ConfigTest(ctx context.Context, config json.RawMessage) error {
+	_, err := c.call(ctx, "config-test", config)
+	return err
+}
+
+// ConfigSet replaces the running configuration as a whole. Kea reconfigures
+// completely: it reloads its hooks and answers no DHCP request meanwhile.
+func (c *Client) ConfigSet(ctx context.Context, config json.RawMessage) error {
+	_, err := c.call(ctx, "config-set", config)
+	return err
+}
+
 // ConfigWrite persists the running configuration to the startup file.
 func (c *Client) ConfigWrite(ctx context.Context) error {
 	_, err := c.call(ctx, "config-write", nil)

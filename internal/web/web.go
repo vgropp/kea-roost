@@ -123,6 +123,10 @@ func New(mgr *manager.Manager, auth Auth, basePath string) http.Handler {
 	mux.HandleFunc("PUT /api/classes/{name}", s.writer(s.updateClass))
 	mux.HandleFunc("DELETE /api/classes/{name}", s.writer(s.deleteClass))
 	mux.HandleFunc("POST /api/config/write", s.writer(s.persist))
+	mux.HandleFunc("GET /api/options/global", s.globalOptions(false))
+	mux.HandleFunc("PUT /api/options/global", s.writer(s.updateGlobalOptions(false)))
+	mux.HandleFunc("GET /api/dhcp6/options/global", s.globalOptions(true))
+	mux.HandleFunc("PUT /api/dhcp6/options/global", s.writer(s.updateGlobalOptions(true)))
 	mux.HandleFunc("GET /api/servers", s.servers)
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/subnets/{subnet}/map", s.subnetMap)
@@ -680,6 +684,36 @@ func (s *server) deleteClass(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) persist(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, s.mgr.Persist(r.Context(), user(r)))
+}
+
+// globalOptions serves the global options of kea-dhcp4 or, with v6, kea-dhcp6.
+func (s *server) globalOptions(v6 bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		options, err := s.mgr.GlobalOptions(r.Context(), v6)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, options)
+	}
+}
+
+func (s *server) updateGlobalOptions(v6 bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Options []manager.ReservationOption `json:"options"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodySize)).Decode(&in); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorBody{Error: "cannot read request"})
+			return
+		}
+		res, err := s.mgr.UpdateGlobalOptions(r.Context(), user(r), v6, in.Options)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeResult(w, res)
+	}
 }
 
 func (s *server) servers(w http.ResponseWriter, r *http.Request) {

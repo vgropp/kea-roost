@@ -277,7 +277,7 @@ func TestDashboard(t *testing.T) {
 
 func TestTablesFitInEveryTheme(t *testing.T) {
 	b := start(t)
-	pages := map[string]string{"classes": "Client classes", "dashboard": "Dashboard", "leases": "Leases", "reservations": "Reservations", "devices": "Devices", "subnets": "Subnets"}
+	pages := map[string]string{"classes": "Client classes", "dashboard": "Dashboard", "leases": "Leases", "reservations": "Reservations", "devices": "Devices", "subnets": "Network"}
 	for _, theme := range []string{"classic", "modern"} {
 		for _, mode := range []string{"light", "dark"} {
 			b.theme(theme, mode)
@@ -348,8 +348,8 @@ func TestReserveFromLeaseWithEditedAddress(t *testing.T) {
 
 func TestEditSubnetAsksBeforeMovingLeases(t *testing.T) {
 	b := start(t)
-	b.open("subnets", "Subnets")
-	b.exec(`document.querySelector('.subnet-edit').click()`)
+	b.open("subnets", "Network")
+	b.exec(`document.querySelector('.subnet-edit:not(.global-edit)').click()`)
 	b.poll(`document.querySelector('dialog form') !== null`)
 	pool := `document.querySelector('dialog .pool-row input')`
 	if got := b.text(pool + `.value`); got != "192.0.2.100 - 192.0.2.199" {
@@ -371,8 +371,8 @@ func TestEditSubnetAsksBeforeMovingLeases(t *testing.T) {
 
 func TestEditSubnetShowsInvalidInput(t *testing.T) {
 	b := start(t)
-	b.open("subnets", "Subnets")
-	b.exec(`document.querySelector('.subnet-edit').click()`)
+	b.open("subnets", "Network")
+	b.exec(`document.querySelector('.subnet-edit:not(.global-edit)').click()`)
 	b.poll(`document.querySelector('dialog form') !== null`)
 	b.exec(`document.querySelector('dialog .pool-row input').value = '10.0.0.1-10.0.0.9'; document.querySelector('dialog form').requestSubmit()`)
 	b.poll(`document.querySelector('dialog .note.crit')?.textContent.includes('is not inside') === true`)
@@ -586,7 +586,7 @@ func TestDevicesMarkAge(t *testing.T) {
 
 func TestSubnetLinksToItsReservations(t *testing.T) {
 	b := start(t)
-	b.open("subnets", "Subnets")
+	b.open("subnets", "Network")
 	if got := b.text(`document.querySelector('dl a').getAttribute('href')`); !strings.HasPrefix(got, "#/reservations") {
 		t.Errorf("link %q", got)
 	}
@@ -884,11 +884,11 @@ func TestNavigationIsGrouped(t *testing.T) {
 	b := start(t)
 	b.open("dashboard", "Dashboard")
 	got := b.text(`[...document.querySelectorAll('.nav-group')].map(g => [...g.children].map(a => a.textContent).join('+')).join(' | ')`)
-	if want := "Dashboard | Leases+Reservations+Devices | Classes+Subnets | Health | Servers+Audit log | Settings"; got != want {
+	if want := "Dashboard | Leases+Reservations+Devices | Classes+Network | Health | Servers+Audit log | Settings"; got != want {
 		t.Fatalf("got %s", got)
 	}
-	b.open("subnets", "Subnets")
-	b.poll(`document.querySelector('nav a.active')?.textContent === 'Subnets'`)
+	b.open("subnets", "Network")
+	b.poll(`document.querySelector('nav a.active')?.textContent === 'Network'`)
 }
 
 func TestClientCardsKeepAddressesOnOneLine(t *testing.T) {
@@ -1144,8 +1144,8 @@ func TestDashboardShowsIPv6LeasesAndDeletesOne(t *testing.T) {
 func TestIPv6SubnetCanBeEdited(t *testing.T) {
 	b := start(t)
 	b.do(chromedp.Navigate(b.url + "/#/subnets?v=6"))
-	b.poll(`document.querySelector('.subnet-edit') !== null`)
-	b.exec(`document.querySelector('.subnet-edit').click()`)
+	b.poll(`document.querySelector('.subnet-edit:not(.global-edit)') !== null`)
+	b.exec(`document.querySelector('.subnet-edit:not(.global-edit)').click()`)
 	b.poll(`document.querySelector('dialog h2')?.textContent === 'Edit subnet fd00:db8:1::/64'`)
 	got := b.text(`document.querySelector('dialog').innerText`)
 	if strings.Contains(got, "Gateway") || !strings.Contains(got, "Preferred lifetime") {
@@ -1188,8 +1188,8 @@ func TestIPv6AddressOpensItsExplanation(t *testing.T) {
 func TestIPv6PrefixDelegationCanBeEdited(t *testing.T) {
 	b := start(t)
 	b.do(chromedp.Navigate(b.url + "/#/subnets?v=6"))
-	b.poll(`document.querySelector('.subnet-edit') !== null`)
-	b.exec(`document.querySelector('.subnet-edit').click()`)
+	b.poll(`document.querySelector('.subnet-edit:not(.global-edit)') !== null`)
+	b.exec(`document.querySelector('.subnet-edit:not(.global-edit)').click()`)
 	b.poll(`document.querySelectorAll('dialog .pd-row').length === 1`)
 	if got := b.text(`document.querySelector('dialog .pd-row input').value`); got != "fd00:db8:2::/48" {
 		t.Fatalf("prefix pool shown as %q", got)
@@ -1296,5 +1296,64 @@ func TestDevicesRecentFilterIncludesCurrent(t *testing.T) {
 	got := b.text(`[...document.querySelectorAll('tbody tr')].map(tr => tr.innerText).join('\n')`)
 	if !strings.Contains(got, "current") || strings.Contains(got, "stale") {
 		t.Errorf("rows: %s", got)
+	}
+}
+
+func TestGlobalOptionsWarnBeforeConfigSet(t *testing.T) {
+	b := start(t)
+	b.open("subnets", "Network")
+	b.poll(`[...document.querySelectorAll('h2')].some(x => x.textContent.startsWith('Global options'))`)
+	b.exec(`[...document.querySelectorAll('h2')].find(x => x.textContent.startsWith('Global options')).querySelector('button').click()`)
+	b.poll(`document.querySelector('dialog h2')?.textContent === 'Edit global options'`)
+	b.exec(`(() => {
+		[...document.querySelectorAll('dialog button')].find(x => x.textContent === 'Add option').click();
+		const inputs = [...document.querySelectorAll('dialog .option-row')].at(-1).querySelectorAll('input');
+		inputs[0].value = 'domain-name';
+		inputs[1].value = 'lan';
+		document.querySelector('dialog form').requestSubmit();
+	})()`)
+	// the whole configuration is reloaded, so the dialog says so first
+	b.poll(`document.querySelector('dialog')?.textContent.includes('config-set') && document.querySelector('dialog')?.textContent.includes('Kea 3.0.3')`)
+	b.fake.Lock()
+	early := b.fake.Reconfigured
+	b.fake.Unlock()
+	if early != 0 {
+		t.Fatal("applied before the confirmation")
+	}
+	b.exec(`[...document.querySelectorAll('dialog button')].find(x => x.textContent === 'Reload and save').click()`)
+	b.poll(`document.querySelector('dialog h2')?.textContent === 'Change succeeded'`)
+	b.fake.Lock()
+	got := fmt.Sprint(b.fake.Config["option-data"])
+	b.fake.Unlock()
+	if !strings.Contains(got, "data:lan") {
+		t.Errorf("options: %s", got)
+	}
+}
+
+// A DNS server the subnet only inherits is marked, and the form shows it as a hint
+// instead of a value, so that clearing the field visibly falls back to it.
+func TestSubnetShowsInheritedDNS(t *testing.T) {
+	b := start(t)
+	b.open("subnets", "Network")
+	b.poll(`[...document.querySelectorAll('dd')].some(d => d.textContent.includes('192.0.2.53') && d.querySelector('.tag')?.textContent === 'global')`)
+	b.exec(`document.querySelector('.subnet-edit:not(.global-edit)').click()`)
+	b.poll(`document.querySelector('dialog form') !== null`)
+	got := b.text(`(() => { const i = [...document.querySelectorAll('dialog .field')].find(f => f.textContent.startsWith('DNS')).querySelector('input'); return i.value + '|' + i.placeholder; })()`)
+	if got != "|inherited from global: 192.0.2.53" {
+		t.Errorf("DNS field: %q", got)
+	}
+}
+
+// An own option Kea reports by its code alone stays the subnet's own in the form.
+func TestSubnetOwnOptionByCode(t *testing.T) {
+	b := start(t)
+	b.fake.Lock()
+	b.fake.Config["subnet4"].([]any)[0].(map[string]any)["option-data"] = []any{map[string]any{"code": 6, "data": "192.0.2.99"}}
+	b.fake.Unlock()
+	b.open("subnets", "Network")
+	b.exec(`document.querySelector('.subnet-edit:not(.global-edit)').click()`)
+	b.poll(`document.querySelector('dialog form') !== null`)
+	if got := b.text(`[...document.querySelectorAll('dialog .field')].find(f => f.textContent.startsWith('DNS')).querySelector('input').value`); got != "192.0.2.99" {
+		t.Errorf("DNS field: %q", got)
 	}
 }

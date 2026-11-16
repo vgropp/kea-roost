@@ -393,3 +393,14 @@ func TestContainsAddressAtTheEdges(t *testing.T) {
 		}
 	}
 }
+
+// A reservation that gives an option by code overrides the subnet's named one.
+func TestEffectiveOptionsByNameOrCode(t *testing.T) {
+	got := effectiveOptions([]kea.OptionLayer{
+		{Source: "subnet 192.0.2.0/24", Options: []kea.Option{{Name: "domain-name-servers", Code: 6, Data: "192.0.2.53"}}},
+		{Source: "reservation", Options: []kea.Option{{Code: 6, Data: "192.0.2.99"}}},
+	})
+	if len(got) != 1 || got[0].Name != "domain-name-servers" || got[0].Data != "192.0.2.99" || got[0].Source != "reservation" || len(got[0].Overrides) != 1 {
+		t.Fatalf("%+v", got)
+	}
+}

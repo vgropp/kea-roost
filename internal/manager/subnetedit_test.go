@@ -190,3 +190,31 @@ func TestEditableNeedsSubnetCommands(t *testing.T) {
 		t.Fatalf("got %+v %v", list, err)
 	}
 }
+
+// Clearing the DNS servers of a subnet removes its own option; the clients then
+// get the global one, which is shown as inherited.
+func TestClearingSubnetDNSFallsBackToGlobal(t *testing.T) {
+	e := setup(t)
+	raw := e.rawSubnet()
+	raw["option-data"] = []any{
+		map[string]any{"name": "routers", "code": 3, "data": "192.0.2.1"},
+		map[string]any{"name": "domain-name-servers", "code": 6, "data": "192.0.2.99"},
+	}
+	in := subnetInput()
+	in.Gateways, in.DNSServers = []string{"192.0.2.1"}, []string{}
+	if res, err := e.mgr.UpdateSubnet(context.Background(), "u", 1, in); err != nil || res.Status != StatusOK {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if got, _ := json.Marshal(e.rawSubnet()); strings.Contains(string(got), "domain-name-servers") {
+		t.Errorf("own option kept: %s", got)
+	}
+	list, err := e.mgr.Subnets(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range list.Subnets[0].Options {
+		if o.Name == "domain-name-servers" && (o.Data != "192.0.2.53" || o.Source != "global") {
+			t.Errorf("%+v", o)
+		}
+	}
+}

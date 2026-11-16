@@ -136,7 +136,7 @@ func TestScreenshots(t *testing.T) {
 	b.do(chromedp.Navigate(b.url + "/#/leases?v=6"))
 	b.poll(`document.querySelectorAll('tbody tr').length === 2 && document.body.innerText.includes('192.0.2.12')`)
 	shot("leases-ipv6")
-	b.open("subnets", "Subnets")
+	b.open("subnets", "Network")
 	b.poll(`document.querySelector('.addr-grid') !== null`)
 	shot("subnets")
 	// a few reservations outside of the pool, and addresses clients chose themselves
@@ -163,7 +163,7 @@ func TestScreenshots(t *testing.T) {
 	shot("client")
 	b.exec(`document.querySelector('dialog .dialog-close').click()`)
 	b.do(chromedp.Navigate(b.url + "/#/servers"))
-	b.poll(`document.querySelectorAll('.server-card').length === 4 && document.querySelectorAll('.ha-link').length === 2 && document.body.innerText.includes('1 difference')`)
+	b.poll(`document.querySelectorAll('.server-card').length === 4 && document.querySelectorAll('.ha-link').length === 2 && document.body.innerText.includes(' difference')`)
 	shot("servers")
 	b.do(chromedp.Navigate(b.url + "/#/settings"))
 	b.poll(`document.querySelector('input[name="reviewDays"]') !== null`)

@@ -38,6 +38,8 @@ type Server struct {
 	// leases come from Leases6.
 	DHCP6   bool
 	Leases6 []map[string]any
+	// Reconfigured counts the config-set commands that replaced Config.
+	Reconfigured int
 }
 
 // Failure makes one command misbehave.
@@ -289,6 +291,20 @@ func (s *Server) handle(command string, args map[string]any) (int, string, any) 
 			return 0, "", map[string]any{"Dhcp6": cfg, "hash": "ABC"}
 		}
 		return 0, "", map[string]any{"Dhcp4": cfg, "hash": "ABC"}
+	case "config-test", "config-set":
+		key := "Dhcp4"
+		if s.DHCP6 {
+			key = "Dhcp6"
+		}
+		section, ok := args[key].(map[string]any)
+		if !ok || args["hash"] != nil {
+			return 1, "configuration has no " + key + " section, or carries the hash of config-get", nil
+		}
+		if command == "config-set" {
+			s.Config = section
+			s.Reconfigured++
+		}
+		return 0, "Configuration successful.", nil
 	case "config-write":
 		s.Persisted = cloneHosts(s.Hosts)
 		return 0, "Configuration written.", map[string]any{"filename": "/etc/kea/kea-dhcp4.conf", "size": 1}

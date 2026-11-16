@@ -29,7 +29,8 @@ lease into a static DHCP reservation in two clicks.
 
 - **Leases and reservations:** search, filters, MAC vendors, change the MAC, classes and DHCP
   options, and a reservation from a lease in two clicks.
-- **Client classes and subnets:** edit classes, pools, gateway, DNS servers and lease lifetime.
+- **Client classes, subnets and global options:** edit classes, pools, gateway, DNS
+  servers, lease lifetime and the options for all clients.
 - **[Accounts](docs/accounts.md):** several users as admin or viewer, a login form,
   optional 2FA with TOTP, and setup of the first admin.
 - **[IPv6](docs/ipv6.md):** leases, reservations, subnets and prefix delegation of a

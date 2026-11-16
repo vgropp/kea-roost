@@ -4,7 +4,7 @@
 
 ![Address map of a /24 with reserved, leased and free addresses](screenshots/subnets.png)
 
-The Subnets page shows every address of a subnet up to a /22 as a colored square, smaller
+The Network page shows every address of a subnet up to a /22 as a colored square, smaller
 from a /23 on. A click on a used one opens the client. Larger subnets show a tile per /24
 with its load, and a click on one opens its squares. Below it are the largest free ranges,
 split into those inside a pool and those free for static addresses, with the complete list

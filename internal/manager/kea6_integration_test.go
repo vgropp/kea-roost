@@ -117,3 +117,17 @@ func TestRealKea6SubnetUpdateKeepsReservations(t *testing.T) {
 		t.Error("subnets are not editable")
 	}
 }
+
+func TestRealKea6GlobalOptions(t *testing.T) {
+	s := startKea6(t)
+	ctx := context.Background()
+	s.ok(s.mgr.UpdateGlobalOptions(ctx, "test", true, []ReservationOption{{Name: "dns-servers", Data: "fd00:db8:1::53"}, {Name: "domain-search", Data: "lan"}}))
+	s.restart()
+	got, err := s.mgr.GlobalOptions(ctx, true)
+	if err != nil || len(got.Options) != 2 || got.Options[0].Data != "fd00:db8:1::53" {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if names := s.hostnames6(); !slices.Equal(names, []string{"printer"}) {
+		t.Errorf("reservations: %v", names)
+	}
+}
