@@ -58,10 +58,13 @@ jobs:
         with:
           persist-credentials: false
 
-      # The lint tools need a newer Go than the minimum in go.mod.
+      # The lint tools need a newer Go than the minimum in go.mod. govulncheck judges
+      # the standard library of this Go, so it has to be the newest release, not the
+      # one cached on the runner.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: stable
+          check-latest: true
 
       - name: Compute the cache week
         id: week
