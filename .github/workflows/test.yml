@@ -1,8 +1,10 @@
 name: ci
 
 on:
+  # Other branches are tested through their pull request, so that a push to one
+  # does not run everything twice.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
   # The release workflow runs these jobs before it publishes anything.
   workflow_call:

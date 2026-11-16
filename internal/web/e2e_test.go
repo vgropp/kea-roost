@@ -210,8 +210,11 @@ func (b *browser) do(steps ...chromedp.Action[chromedp.Void]) {
 // page being replaced fails, the next one reaches the new page.
 func (b *browser) poll(js string) {
 	b.t.Helper()
+	// stop a little before the browser context ends, so that the page can still
+	// tell why it is stuck, such as an error note
+	deadline, _ := b.ctx.Deadline()
 	var last error
-	for b.ctx.Err() == nil {
+	for b.ctx.Err() == nil && time.Until(deadline) > 3*time.Second {
 		done, err := chromedp.Run(b.ctx, chromedp.Evaluate[bool](js))
 		if err == nil && done {
 			return
@@ -219,7 +222,15 @@ func (b *browser) poll(js string) {
 		last = err
 		time.Sleep(pollInterval)
 	}
-	b.t.Fatalf("waiting for %s: %v", js, last)
+	page, _ := chromedp.Run(b.ctx, chromedp.Evaluate[string](`document.body.innerText.slice(0, 2000)`))
+	b.t.Fatalf("waiting for %s: %v\npage:\n%s", js, last, page)
+}
+
+// click waits until the expression finds an element and clicks it in the same
+// step, so that a table drawn anew in between cannot take the element away.
+func (b *browser) click(element string) {
+	b.t.Helper()
+	b.poll(`(() => { const el = ` + element + `; if (!el || el.disabled) return false; el.click(); return true; })()`)
 }
 
 func (b *browser) open(page, heading string) {
@@ -759,8 +770,8 @@ func TestIPv6ReservationFromLease(t *testing.T) {
 	b.fake6.Leases6[1]["hostname"] = "laptop."
 	b.fake6.Unlock()
 	b.do(chromedp.Navigate(b.url + "/#/leases?v=6&reload"))
-	b.poll(`document.querySelectorAll('tbody tr').length === 2 && [...document.querySelectorAll('tbody button')].some(x => x.textContent === 'Reserve')`)
-	b.exec(`[...document.querySelectorAll('tbody button')].find(x => x.textContent === 'Reserve').click()`)
+	b.poll(`document.querySelectorAll('tbody tr').length === 2`)
+	b.click(`[...document.querySelectorAll('tbody button')].find(x => x.textContent === 'Reserve')`)
 	b.poll(`document.querySelector('dialog form input.mono-input')?.value.startsWith('00:04:aa')`)
 	// the dot of the FQDN the client sent is not part of the suggested name
 	b.poll(`[...document.querySelectorAll('dialog input')].some(i => i.value === 'laptop')`)
@@ -1260,8 +1271,7 @@ func TestIPv6ReservationWarnsAboutThePool(t *testing.T) {
 func TestIPv6ReservationStartsWithThePrefix(t *testing.T) {
 	b := start(t)
 	b.do(chromedp.Navigate(b.url + "/#/reservations?v=6"))
-	b.poll(`[...document.querySelectorAll('button')].some(x => x.textContent === 'New reservation' && !x.disabled)`)
-	b.exec(`[...document.querySelectorAll('button')].find(x => x.textContent === 'New reservation').click()`)
+	b.click(`[...document.querySelectorAll('button')].find(x => x.textContent === 'New reservation')`)
 	field := `label => [...document.querySelectorAll('dialog .field')].find(f => f.querySelector('label')?.textContent.startsWith(label)).querySelector('input')`
 	b.poll(`(` + field + `)('Addresses').value === 'fd00:db8:1::'`)
 	b.exec(`(() => {
