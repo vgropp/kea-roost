@@ -444,3 +444,11 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
 .map6 .addr.active { outline: 2px solid var(--ink); outline-offset: 1px; }
 .map6 h3 .muted { font-weight: normal; }
 .field-note { font-size: 12px; margin-top: 4px; }
+.used6 { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(34rem, 100%), 1fr)); gap: 4px 28px; }
+/* the name keeps room of its own; a long address may wrap instead */
+.used6 li { display: grid; grid-template-columns: minmax(0, 17rem) minmax(6rem, 1fr) max-content; gap: 12px; align-items: center; font-size: 13px; }
+.used6 li > a { overflow-wrap: anywhere; }
+.used6 .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.map6 summary { cursor: pointer; font-size: 13px; color: var(--ink-2); }
+.map6 summary + .used6 { margin-top: 8px; }
+.addr.registered { background: color-mix(in srgb, var(--ok) 30%, transparent); }

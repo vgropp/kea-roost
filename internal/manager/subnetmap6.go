@@ -62,6 +62,9 @@ type SubnetMap6 struct {
 	PDPools []PDMap6   `json:"pdPools"`
 	// Outside lists used addresses that lie in no pool, such as reservations.
 	Outside []Address6 `json:"outside"`
+	// Registered are addresses the clients chose themselves and reported to Kea
+	// (RFC 9686); they are not handed out, so they are kept apart.
+	Registered []Address6 `json:"registered"`
 }
 
 func toInt(ip netip.Addr) *big.Int {
@@ -90,8 +93,10 @@ func mark(used map[string]Address6, a Address6) {
 // subnetMap6 lays out the pools of a subnet with its active leases and reservations.
 func subnetMap6(s kea.Subnet6, leases []kea.Lease6, hosts []kea.Host, now time.Time) *SubnetMap6 {
 	addresses, prefixes := map[string]Address6{}, map[string]Address6{}
+	var registered []Address6
 	for _, l := range leases {
-		if _, active := leaseState(l.State, l.CLTT+l.ValidLft-now.Unix()); !active || l.SubnetID != s.ID {
+		state, active := leaseState(l.State, l.CLTT+l.ValidLft-now.Unix())
+		if !active || l.SubnetID != s.ID {
 			continue
 		}
 		ip, err := netip.ParseAddr(l.IPAddress)
@@ -102,6 +107,10 @@ func subnetMap6(s kea.Subnet6, leases []kea.Lease6, hosts []kea.Host, now time.T
 		if l.Type == "IA_PD" {
 			mark(prefixes, Address6{netip.PrefixFrom(ip, l.PrefixLen).String(), "leased", name})
 		} else {
+			if state == "registered" {
+				registered = append(registered, Address6{ip.String(), "registered", name})
+				continue
+			}
 			mark(addresses, Address6{ip.String(), "leased", name})
 		}
 	}
@@ -122,7 +131,16 @@ func subnetMap6(s kea.Subnet6, leases []kea.Lease6, hosts []kea.Host, now time.T
 		}
 	}
 
-	m := &SubnetMap6{Pools: []PoolMap6{}, PDPools: []PDMap6{}, Outside: []Address6{}}
+	m := &SubnetMap6{Pools: []PoolMap6{}, PDPools: []PDMap6{}, Outside: []Address6{}, Registered: []Address6{}}
+	for _, a := range registered {
+		// a reservation of the same address says more
+		if _, ok := addresses[a.Address]; !ok {
+			m.Registered = append(m.Registered, a)
+		}
+	}
+	slices.SortFunc(m.Registered, func(a, b Address6) int {
+		return netip.MustParseAddr(a.Address).Compare(netip.MustParseAddr(b.Address))
+	})
 	inPool := map[string]bool{}
 	for _, p := range s.Pools {
 		size, _ := new(big.Int).SetString(p.Size, 10)

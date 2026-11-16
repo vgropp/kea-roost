@@ -80,6 +80,8 @@ type Lease6View struct {
 	Reserved *string `json:"reserved,omitempty"`
 	// Device is the IPv4 reservation of the same MAC.
 	Device *ReservationRef `json:"device,omitempty"`
+	// Wifi says where the client is connected, by its MAC, if the AP dashboard knows it.
+	Wifi *WifiClient `json:"wifi,omitempty"`
 }
 
 // Lease6List is the answer of Leases6.
@@ -313,6 +315,10 @@ func (m *Manager) leases6(ctx context.Context, arp []arpDevice) (*Lease6List, er
 	// the ARP monitor sees which MAC uses an address, also for clients that keep
 	// their MAC from Kea
 	macByIP := macsByIPv6(arp)
+	wifi, err := m.wifiClients(ctx)
+	if err != nil {
+		list.Warnings = append(list.Warnings, Warning{SeverityWarn, err.Error()})
+	}
 	macByDUID := map[string]string{}
 	if leases4, err := m.source(ctx).client.Leases(ctx); err == nil {
 		for _, l := range leases4 {
@@ -364,6 +370,9 @@ func (m *Manager) leases6(ctx context.Context, arp []arpDevice) (*Lease6List, er
 		}
 		if d, ok := devices[strings.ToLower(v.HWAddress)]; ok && v.HWAddress != "" {
 			v.Device = reservationRef(d, "", "")
+		}
+		if c, ok := wifi[strings.ToLower(v.HWAddress)]; ok && v.HWAddress != "" {
+			v.Wifi = c.view()
 		}
 		list.Leases = append(list.Leases, v)
 	}

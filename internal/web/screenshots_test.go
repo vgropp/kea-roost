@@ -139,9 +139,20 @@ func TestScreenshots(t *testing.T) {
 	b.open("subnets", "Subnets")
 	b.poll(`document.querySelector('.addr-grid') !== null`)
 	shot("subnets")
+	// a few reservations outside of the pool, and addresses clients chose themselves
+	b.fake6.Lock()
+	for i, name := range []string{"nas", "camera", "homeserver"} {
+		b.fake6.Hosts = append(b.fake6.Hosts, map[string]any{"subnet-id": 1, "duid": fmt.Sprintf("00:03:00:01:02:00:00:00:00:%02x", 0x20+i),
+			"ip-addresses": []any{fmt.Sprintf("fd00:db8:1::%x", 0x20+i)}, "hostname": name})
+	}
+	for i := range 4 {
+		b.fake6.Leases6 = append(b.fake6.Leases6, map[string]any{"ip-address": fmt.Sprintf("fd00:db8:1:0:2c0:ffee:%x:%x", 0x10+i, 0xa0+i), "type": "IA_NA",
+			"duid": fmt.Sprintf("00:04:%02x", i), "iaid": 1, "subnet-id": 1, "state": 4, "cltt": time.Now().Unix(), "valid-lft": 86400})
+	}
+	b.fake6.Unlock()
 	b.do(chromedp.Navigate(b.url + "/#/subnets?v=6"))
-	b.poll(`document.querySelector('.map6 .addr-grid') !== null`)
-	b.exec(`document.querySelector('.map6 .addr-grid button').click()`)
+	b.poll(`document.querySelector('.map6 .addr-grid') !== null && document.querySelector('details.map6') !== null`)
+	b.exec(`document.querySelector('details.map6').open = true; document.querySelector('.map6 .addr-grid button').click()`)
 	shot("subnets-ipv6")
 	b.do(chromedp.Navigate(b.url + "/#/health"))
 	b.poll(`document.querySelector('.health-summary') !== null`)

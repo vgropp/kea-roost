@@ -346,7 +346,7 @@ function recentLeases(leases, reload) {
 function recentLeases6(leases, reload) {
   const notice = h('div');
   const columns = lease6Columns();
-  columns.splice(4, 0, {
+  columns.splice(6, 0, {
     key: 'started', label: 'Last contact', class: 'mono', sort: r => -new Date(r.started).getTime(),
     render: r => h('span', { title: fmtTime(r.started) }, fmtAge(r.started)),
   });
@@ -870,11 +870,11 @@ function lease6Columns() {
       key: 'address', label: 'Address', class: 'mono', sort: r => ip6Key(r.address), search: r => r.address,
       render: r => r.prefix ? [client6Link(r.address, `${r.address}/${r.prefixLen}`), ' ', h('span', { class: 'tag', title: 'Delegated prefix' }, 'prefix')] : client6Link(r.address),
     },
-    { key: 'duid', label: 'DUID', class: 'mono clip', search: r => r.duid, render: r => duidCell(r.duid) },
     {
       key: 'hwAddress', label: 'MAC', class: 'mono', search: r => `${r.hwAddress || ''} ${r.vendor || ''}`,
       render: r => r.macSource ? h('span', { title: { duid: 'Read from the DUID', dhcpv4: 'From the IPv4 lease with the same DUID', network: 'Seen on the network with this address' }[r.macSource] }, macCell(r.hwAddress, r.vendor)) : macCell(r.hwAddress, r.vendor),
     },
+    { key: 'duid', label: 'DUID', class: 'mono clip', search: r => r.duid, render: r => duidCell(r.duid) },
     { key: 'hostname', label: 'Hostname', search: r => r.hostname, render: r => shownName(r.hostname) },
     {
       key: 'device', label: 'IPv4 device', search: r => `${r.device?.hostname ?? ''} ${r.device?.ipAddress ?? ''}`,
@@ -886,6 +886,7 @@ function lease6Columns() {
         ? h('a', { class: 'reservation-link', href: `#/reservations?v=6&q=${encodeURIComponent(r.address)}`, title: `Reservation of ${r.duid}` }, r.reserved || 'reserved')
         : '–',
     },
+    { key: 'wifi', label: 'AP', class: 'mono', search: r => `${r.wifi?.accessPoint ?? ''} ${r.wifi?.interface ?? ''}`, sort: r => r.wifi?.accessPoint ?? '', render: r => whereCell(r.wifi, false) },
     { key: 'subnet', label: 'Subnet', class: 'mono', render: r => r.subnet || String(r.subnetId) },
     {
       key: 'state', label: 'Status',
@@ -930,7 +931,7 @@ function leases6Page(params) {
   const notice = h('div');
   const table = dataTable({
     params,
-    search: 'Search address, DUID, MAC, vendor or hostname',
+    search: 'Search address, MAC, DUID, vendor or hostname',
     empty: 'No IPv6 leases',
     initialSort: 'address',
     filters: [
@@ -1070,7 +1071,7 @@ function reservations6Page(params) {
   const notice = h('div');
   const table = dataTable({
     params,
-    search: 'Search address, DUID, MAC, vendor or hostname',
+    search: 'Search address, MAC, DUID, vendor or hostname',
     empty: 'No IPv6 reservations',
     initialSort: 'addresses',
     columns: [
@@ -1122,11 +1123,12 @@ function reservations6Page(params) {
   load();
 }
 
-// usedList names the used addresses of one square.
+// usedList lines up address, name and state in columns.
 function usedList(used) {
-  return h('ul', { class: 'free-ranges' }, used.map(u => h('li', {},
+  return h('ul', { class: 'used6' }, used.map(u => h('li', {},
     u.address.includes('/') ? h('span', { class: 'mono' }, u.address) : client6Link(u.address),
-    u.name ? ` ${u.name}` : '', ' ', h('span', { class: 'legend' }, h('span', { class: `addr ${u.state}` }), ADDRESS_STATES[u.state]))));
+    h('span', { class: 'name', title: u.name || '' }, u.name || '–'),
+    h('span', { class: 'legend' }, h('span', { class: `addr ${u.state}` }), ADDRESS_STATES[u.state]))));
 }
 
 // subnet6Map draws the pools of an IPv6 subnet. An address pool is far too large
@@ -1168,6 +1170,9 @@ function subnet6Map(m) {
         return square(c.state, title, button => show(button, c.address, c.state === 'free' ? [] : [c]));
       })) : h('p', { class: 'muted' }, 'Too many prefixes to draw, and none used.'))),
     m.outside.length ? h('div', { class: 'map6' }, h('h3', {}, 'Outside of the pools'), usedList(m.outside)) : null,
+    m.registered.length ? h('details', { class: 'map6' },
+      h('summary', {}, `${fmtCount(m.registered.length)} addresses the clients chose themselves (SLAAC) and reported to Kea`),
+      usedList(m.registered)) : null,
   ].filter(Boolean);
   if (!parts.length) return null;
   return h('div', { class: 'panel pad map6-panel' }, legend, ...parts, detail);
@@ -1419,7 +1424,7 @@ function subnetCard(s, editable, reload) {
 }
 
 const ADDRESS_STATES = {
-  reserved: 'Reserved', leased: 'Leased', device: 'Seen on the network', gateway: 'Gateway', free: 'Free', network: 'Network or broadcast',
+  reserved: 'Reserved', leased: 'Leased', registered: 'Chosen by the client', device: 'Seen on the network', gateway: 'Gateway', free: 'Free', network: 'Network or broadcast',
 };
 
 const SHOWN_RANGES = 8;
@@ -1944,6 +1949,7 @@ function checkSummary(checks, open, expanded) {
   details.open = expanded;
   return details;
 }
+      l?.wifi ? clientCard('WiFi', [['Access point', l.wifi.accessPoint], ['Network', l.wifi.interface], ['Signal', `${l.wifi.signal} dBm`], ['Connected', fmtDuration(l.wifi.connectedTime)]]) : null,
 
 // Shows what the review looks at, also while it finds nothing.
 function ruleSummary(rules, expanded, remember) {

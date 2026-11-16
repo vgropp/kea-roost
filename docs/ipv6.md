@@ -21,10 +21,10 @@ It uses the login of `KEA_URL`. For an HA standby, see
 
 Leases, Reservations and Subnets get an IPv4|IPv6 switch; the navigation stays the same.
 
-- **Leases:** address or delegated prefix, DUID, MAC, name, state and expiry. Admins
-  delete them on every `kea-dhcp6`, like IPv4 leases. A click on an address opens the
-  client: its lease, its reservation, why it has this address and which options it
-  receives from which level.
+- **Leases:** address or delegated prefix, DUID, MAC, name, access point, state and
+  expiry. Admins delete them on every `kea-dhcp6`, like IPv4 leases. A click on an
+  address opens the client: its lease, its reservation, why it has this address and
+  which options it receives from which level.
 - **Reservations:** by DUID or MAC, with addresses, delegated prefixes for a router,
   and a name. Admins create, edit and delete them, or reserve a lease with
   **Reserve**. A new reservation starts with the prefix of its subnet, and a short
@@ -39,7 +39,9 @@ Leases, Reservations and Subnets get an IPv4|IPv6 switch; the navigation stays t
 A pool of IPv6 addresses is far too large for a square per address: each square
 stands for an equal share of it and shows whether anything in it is reserved or
 leased. A prefix pool gets a square per prefix it hands out, up to 1,024. A click on a
-square lists what is used in it.
+square lists what is used in it. Below the pools are the used addresses outside of
+them, such as reservations, and, folded away, the addresses clients chose themselves
+and reported to Kea.
 
 The dashboard shows the latest IPv6 leases and the use of the IPv6 pools, the Servers
 and Health pages cover `kea-dhcp6`, the [configuration review](diagnostics.md#ipv6) has
