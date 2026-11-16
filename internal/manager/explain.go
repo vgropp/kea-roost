@@ -295,7 +295,7 @@ func explain(in explainInput) (*Explanation, error) {
 		add(SeverityInfo, "Classes", "None assigned by a reservation.")
 	}
 	for _, c := range in.classes {
-		if c.Test != "" && !slices.Contains(classes, c.Name) {
+		if c.Test != "" && !c.Additional && !slices.Contains(classes, c.Name) {
 			e.Unknown = append(e.Unknown, fmt.Sprintf("Class %s applies if the client matches %s.", c.Name, c.Test))
 		}
 	}
@@ -303,10 +303,17 @@ func explain(in explainInput) (*Explanation, error) {
 	if subnet == nil {
 		return e, nil
 	}
+	added, err := additionalClasses(in, subnet.ID, ip, classes, e)
+	if err != nil {
+		return nil, err
+	}
+	if len(added) > 0 {
+		add(SeverityOK, "Classes", "Added after the reservation lookup: %s.", strings.Join(added, ", "))
+	}
 	if subnet.ValidLifetime != nil {
 		add(SeverityInfo, "Lifetime", "%s.", readableSeconds(*subnet.ValidLifetime))
 	}
-	layers, err := kea.OptionLayers(in.config, subnet.ID, ip, classes)
+	layers, err := kea.OptionLayers(in.config, subnet.ID, ip, append(slices.Clone(classes), added...))
 	if err != nil {
 		return nil, err
 	}
@@ -315,6 +322,62 @@ func explain(in explainInput) (*Explanation, error) {
 	}
 	e.Options = effectiveOptions(layers)
 	return e, nil
+}
+
+// additionalClasses evaluates the additional classes of the pool, subnet and
+// shared network in Kea's order and returns those that apply. A test Kea Roost
+// cannot evaluate is listed as unknown.
+func additionalClasses(in explainInput, subnetID int64, ip netip.Addr, assigned []string, e *Explanation) ([]string, error) {
+	names, err := kea.AdditionalClasses(in.config, subnetID, ip)
+	if err != nil {
+		return nil, err
+	}
+	defined := map[string]kea.Class{}
+	for _, c := range in.classes {
+		defined[c.Name] = c
+	}
+	evaluated := map[string]truth{}
+	for _, name := range assigned {
+		evaluated[name] = yes
+	}
+	member := func(name string) truth {
+		if t, ok := evaluated[name]; ok {
+			return t
+		}
+		switch name {
+		case "ALL":
+			return yes
+		case "KNOWN":
+			return truthOf(in.host != nil)
+		case "UNKNOWN":
+			return truthOf(in.host == nil)
+		}
+		c, ok := defined[name]
+		if !ok || c.Additional || c.Test == "" {
+			// only a reservation or an earlier additional evaluation assigns it
+			return no
+		}
+		return unknown
+	}
+	var added []string
+	for _, name := range names {
+		c, ok := defined[name]
+		if _, done := evaluated[name]; done || !ok {
+			continue
+		}
+		t := yes
+		if c.Test != "" {
+			t = evalTest(c.Test, member)
+		}
+		evaluated[name] = t
+		switch t {
+		case yes:
+			added = append(added, name)
+		case unknown:
+			e.Unknown = append(e.Unknown, fmt.Sprintf("Class %s is evaluated for this subnet and applies if the client matches %s.", name, c.Test))
+		}
+	}
+	return added, nil
 }
 
 // containsAddress looks for a whole address, so that 192.0.2.1 does not match

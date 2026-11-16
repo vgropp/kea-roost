@@ -25,7 +25,9 @@ inside a pool without a lease.
 
 The explanation is retraced from the configuration, not read from Kea. What depends on
 the packet of the client is listed instead of guessed: a class with a `test` only shows
-up as "applies if the client matches". A device without a lease outside of the pools
+up as "applies if the client matches". An additional class whose test only combines
+`member()` with `not`, `and` and `or`, such as `not member('direct-dns')`, is decided
+from the classes of the reservation. A device without a lease outside of the pools
 counts as *probably* static, because a foreign DHCP server would look the same.
 
 ![Client popup with lease, reservation, network, WiFi and why the client gets its address](screenshots/client.png)

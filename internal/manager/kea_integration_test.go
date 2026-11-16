@@ -677,3 +677,45 @@ func TestRealKeaGlobalOptions(t *testing.T) {
 		t.Errorf("a refused change touched the options: %v", after.Options)
 	}
 }
+
+// The second way to give most clients one set of DNS servers: an additional class
+// that tests a class reservations assign, listed by the subnet.
+func TestRealKeaAdditionalClasses(t *testing.T) {
+	s := startKea(t, "")
+	ctx := context.Background()
+	s.ok(s.mgr.CreateClass(ctx, "test", ClassInput{Name: "lan-dns", Test: new("not member('direct-dns')"), Additional: new(true),
+		Options: []ReservationOption{{Name: "domain-name-servers", Data: "192.0.2.53"}}}))
+	list := []string{"lan-dns"}
+	s.ok(s.mgr.UpdateSubnet(ctx, "test", 1, SubnetInput{Pools: []string{"192.0.2.100-192.0.2.199"}, Gateways: []string{"192.0.2.1"}, ValidLifetime: 7200, AdditionalClasses: &list}))
+	s.restart()
+
+	conf := s.config()
+	classes := conf["client-classes"].([]any)
+	entry := classes[len(classes)-1].(map[string]any)
+	if entry["test"] != "not member('direct-dns')" || entry["only-in-additional-list"] != true {
+		t.Errorf("class on disk: %v", entry)
+	}
+	if got := stringList(conf["subnet4"].([]any)[0].(map[string]any)["evaluate-additional-classes"]); !slices.Equal(got, list) {
+		t.Errorf("subnet on disk: %v", got)
+	}
+
+	// camera has a reservation without classes, printer is in direct-dns
+	for ip, want := range map[string]string{"192.0.2.11": "class lan-dns", "192.0.2.10": "class direct-dns"} {
+		view, err := s.mgr.Client(ctx, ip)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i := slices.IndexFunc(view.Explanation.Options, func(o EffectiveOption) bool { return o.Name == "domain-name-servers" }); i < 0 || view.Explanation.Options[i].Source != want {
+			t.Errorf("%s: options %+v", ip, view.Explanation.Options)
+		}
+	}
+
+	// Kea checks the test itself: a class may only test classes defined before it
+	res, err := s.mgr.CreateClass(ctx, "test", ClassInput{Name: "broken", Test: new("member('later')"), Options: []ReservationOption{{Name: "domain-name", Data: "lan"}}})
+	if err == nil && res.Status == StatusOK {
+		t.Error("a test naming an unknown class was accepted")
+	}
+	if _, err := s.mgr.DeleteClass(ctx, "test", "lan-dns"); err == nil {
+		t.Error("a class listed by a subnet was deleted")
+	}
+}

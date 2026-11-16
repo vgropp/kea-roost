@@ -438,6 +438,31 @@ type SubnetView struct {
 	OutsidePools  *int64       `json:"outsidePools"`
 	Percent       *float64     `json:"percent"`
 	Reservations  *int         `json:"reservations"`
+	// AdditionalClasses are the classes the subnet has Kea evaluate after the
+	// reservation lookup, with what they set.
+	AdditionalClasses []AdditionalClassView `json:"additionalClasses"`
+}
+
+// AdditionalClassView is an additional class of a subnet.
+type AdditionalClassView struct {
+	Name    string       `json:"name"`
+	Test    string       `json:"test,omitempty"`
+	Options []kea.Option `json:"options"`
+	// Missing tells that no class of this name exists.
+	Missing bool `json:"missing,omitempty"`
+}
+
+// additionalClassViews describes the additional classes of a subnet.
+func additionalClassViews(s kea.Subnet, classes []kea.Class) []AdditionalClassView {
+	out := []AdditionalClassView{}
+	for _, name := range s.AdditionalClasses {
+		v := AdditionalClassView{Name: name, Options: []kea.Option{}, Missing: true}
+		if i := slices.IndexFunc(classes, func(c kea.Class) bool { return c.Name == name }); i >= 0 {
+			v.Test, v.Options, v.Missing = classes[i].Test, classes[i].Options, false
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 func stat(stats map[string]int64, format string, args ...any) *int64 {
@@ -556,7 +581,15 @@ type SubnetList struct {
 // Subnets lists the configured subnets. Statistics and reservation counts are
 // optional additions: their absence must not hide the configuration.
 func (m *Manager) Subnets(ctx context.Context) (*SubnetList, error) {
-	subnets, err := m.subnets(ctx)
+	config, err := m.source(ctx).client.ConfigGet(ctx)
+	if err != nil {
+		return nil, err
+	}
+	subnets, err := kea.ParseSubnets(config)
+	if err != nil {
+		return nil, err
+	}
+	classes, err := kea.ParseClasses(config)
 	if err != nil {
 		return nil, err
 	}
@@ -581,6 +614,9 @@ func (m *Manager) Subnets(ctx context.Context) (*SubnetList, error) {
 		leases = nil
 	}
 	list.Subnets = subnetViews(subnets, stats, hosts, leases)
+	for i := range list.Subnets {
+		list.Subnets[i].AdditionalClasses = additionalClassViews(subnets[i], classes)
+	}
 	return list, nil
 }
 

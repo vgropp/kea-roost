@@ -64,3 +64,19 @@ func FuzzSubnetMap6(f *testing.F) {
 		reviewConfig6(config, subnets, hosts)
 	})
 }
+
+// FuzzEvalTest feeds arbitrary class tests to the evaluator: it must never panic,
+// and a test it decides must stay decided the same way with the classes swapped.
+func FuzzEvalTest(f *testing.F) {
+	for _, seed := range []string{"not member('a')", "member('a') and (member('b') or not member('c'))", "((", "member('", "member('a')) or (member('a')", "substring(option[60].hex,0,3) == 'x'"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, test string) {
+		member := func(name string) truth { return truthOf(name == "a") }
+		got := evalTest(test, member)
+		// the extra bracket can pass the depth limit, which makes it unknown
+		if neg := evalTest("not ("+test+")", member); got != unknown && neg != unknown && neg != got.not() {
+			t.Errorf("%q is %v, but its negation is not the opposite", test, got)
+		}
+	})
+}

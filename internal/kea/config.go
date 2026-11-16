@@ -46,6 +46,9 @@ type Subnet struct {
 	Pools         []Pool       `json:"pools"`
 	Options       []Option     `json:"options"`
 	ValidLifetime *int64       `json:"validLifetime"`
+	// AdditionalClasses are the classes the subnet itself has Kea evaluate after
+	// the reservation lookup (evaluate-additional-classes).
+	AdditionalClasses []string `json:"additionalClasses"`
 }
 
 // option returns the values of a comma separated option, or nil.
@@ -122,6 +125,7 @@ type rawPool struct {
 	Pool       string      `json:"pool"`
 	PoolID     *int64      `json:"pool-id"`
 	OptionData []rawOption `json:"option-data"`
+	rawAdditional
 }
 
 type rawSubnet struct {
@@ -130,6 +134,21 @@ type rawSubnet struct {
 	Pools         []rawPool   `json:"pools"`
 	OptionData    []rawOption `json:"option-data"`
 	ValidLifetime *int64      `json:"valid-lifetime"`
+	rawAdditional
+}
+
+// rawAdditional reads the additional classes of a pool, subnet or shared network.
+// Kea 3.0 renamed require-client-classes and still accepts the old name.
+type rawAdditional struct {
+	Evaluate []string `json:"evaluate-additional-classes"`
+	Require  []string `json:"require-client-classes"`
+}
+
+func (r rawAdditional) list() []string {
+	if r.Evaluate != nil {
+		return r.Evaluate
+	}
+	return r.Require
 }
 
 type rawScope struct {
@@ -137,6 +156,7 @@ type rawScope struct {
 	OptionData    []rawOption `json:"option-data"`
 	ValidLifetime *int64      `json:"valid-lifetime"`
 	Subnets       []rawSubnet `json:"subnet4"`
+	rawAdditional
 }
 
 // Class is a configured client class.
@@ -144,6 +164,17 @@ type Class struct {
 	Name    string
 	Test    string
 	Options []Option
+	// Additional classes are only evaluated where a pool, subnet or shared network
+	// lists them, after the reservation lookup (only-in-additional-list).
+	Additional bool
+}
+
+type rawClass struct {
+	Name           string      `json:"name"`
+	Test           string      `json:"test"`
+	OptionData     []rawOption `json:"option-data"`
+	OnlyInList     bool        `json:"only-in-additional-list"`
+	OnlyIfRequired bool        `json:"only-if-required"`
 }
 
 // OptionLayer is what one level of the configuration sets.
@@ -160,10 +191,7 @@ func OptionLayers(config json.RawMessage, subnetID int64, ip netip.Addr, classes
 		Dhcp4 struct {
 			rawScope
 			SharedNetworks []rawScope `json:"shared-networks"`
-			Classes        []struct {
-				Name       string      `json:"name"`
-				OptionData []rawOption `json:"option-data"`
-			} `json:"client-classes"`
+			Classes        []rawClass `json:"client-classes"`
 		} `json:"Dhcp4"`
 	}
 	if err := json.Unmarshal(config, &doc); err != nil {
@@ -206,11 +234,7 @@ func OptionLayers(config json.RawMessage, subnetID int64, ip netip.Addr, classes
 func ParseClasses(config json.RawMessage) ([]Class, error) {
 	var doc struct {
 		Dhcp4 struct {
-			Classes []struct {
-				Name       string      `json:"name"`
-				Test       string      `json:"test"`
-				OptionData []rawOption `json:"option-data"`
-			} `json:"client-classes"`
+			Classes []rawClass `json:"client-classes"`
 		} `json:"Dhcp4"`
 	}
 	if err := json.Unmarshal(config, &doc); err != nil {
@@ -218,7 +242,45 @@ func ParseClasses(config json.RawMessage) ([]Class, error) {
 	}
 	out := make([]Class, 0, len(doc.Dhcp4.Classes))
 	for _, c := range doc.Dhcp4.Classes {
-		out = append(out, Class{c.Name, c.Test, mergeOptions(c.OptionData)})
+		out = append(out, Class{c.Name, c.Test, mergeOptions(c.OptionData), c.OnlyInList || c.OnlyIfRequired})
+	}
+	return out, nil
+}
+
+// AdditionalClasses returns the additional classes Kea evaluates for a client of
+// the subnet with the address ip: those of its pool, of the subnet and of its
+// shared network, in this order.
+func AdditionalClasses(config json.RawMessage, subnetID int64, ip netip.Addr) ([]string, error) {
+	var doc struct {
+		Dhcp4 struct {
+			rawScope
+			SharedNetworks []rawScope `json:"shared-networks"`
+		} `json:"Dhcp4"`
+	}
+	if err := json.Unmarshal(config, &doc); err != nil {
+		return nil, fmt.Errorf("cannot read configuration: %w", err)
+	}
+	var out []string
+	add := func(raw rawSubnet, network rawScope) {
+		for _, rp := range raw.Pools {
+			if p, err := ParsePool(rp.Pool); err == nil && ip.IsValid() && p.Contains(ip) {
+				out = append(out, rp.list()...)
+			}
+		}
+		out = append(out, raw.list()...)
+		out = append(out, network.list()...)
+	}
+	for _, raw := range doc.Dhcp4.Subnets {
+		if raw.ID == subnetID {
+			add(raw, rawScope{})
+		}
+	}
+	for _, network := range doc.Dhcp4.SharedNetworks {
+		for _, raw := range network.Subnets {
+			if raw.ID == subnetID {
+				add(raw, network)
+			}
+		}
 	}
 	return out, nil
 }
@@ -334,13 +396,14 @@ func buildSubnet(raw rawSubnet, network string, global, shared rawScope) (Subnet
 		return Subnet{}, fmt.Errorf("subnet %d: %w", raw.ID, err)
 	}
 	s := Subnet{
-		ID:            raw.ID,
-		Subnet:        raw.Subnet,
-		Prefix:        prefix.Masked(),
-		SharedNetwork: network,
-		Pools:         []Pool{},
-		Options:       mergeSourced("dhcp4", subnetLevels, global.OptionData, shared.OptionData, raw.OptionData),
-		ValidLifetime: firstSet(raw.ValidLifetime, shared.ValidLifetime, global.ValidLifetime),
+		ID:                raw.ID,
+		Subnet:            raw.Subnet,
+		Prefix:            prefix.Masked(),
+		SharedNetwork:     network,
+		Pools:             []Pool{},
+		Options:           mergeSourced("dhcp4", subnetLevels, global.OptionData, shared.OptionData, raw.OptionData),
+		ValidLifetime:     firstSet(raw.ValidLifetime, shared.ValidLifetime, global.ValidLifetime),
+		AdditionalClasses: append([]string{}, raw.list()...),
 	}
 	for i, rp := range raw.Pools {
 		p, err := ParsePool(rp.Pool)
@@ -382,6 +445,9 @@ var standardOptions = map[string]map[string]int64{
 		"ntp-servers": 42, "tftp-server-name": 66, "boot-file-name": 67, "domain-search": 119, "time-offset": 2},
 	"dhcp6": {"dns-servers": 23, "domain-search": 24, "sntp-servers": 31, "information-refresh-time": 32},
 }
+
+// StandardCode returns the code of a well-known DHCPv4 option name, or 0.
+func StandardCode(name string) int64 { return standardOptions["dhcp4"][name] }
 
 // withStandardName fills in the name or code of a standard option that has only one.
 func withStandardName(space string, o Option) Option {

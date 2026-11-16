@@ -24,7 +24,12 @@ type SubnetInput struct {
 	Gateways      []string `json:"gateways"`
 	DNSServers    []string `json:"dnsServers"`
 	ValidLifetime int64    `json:"validLifetime"`
+	// AdditionalClasses replaces evaluate-additional-classes; nil leaves it alone.
+	AdditionalClasses *[]string `json:"additionalClasses,omitempty"`
 }
+
+// maxAdditionalClasses bounds the list of additional classes of a subnet.
+const maxAdditionalClasses = 32
 
 // canonicalPools parses, sorts and rewrites the pools to Kea's "first-last" form.
 func canonicalPools(texts []string, prefix netip.Prefix) ([]kea.Pool, []string) {
@@ -75,7 +80,15 @@ func listAddresses(ips []string) string {
 // checkSubnet validates a change against the current state of Kea and returns
 // the subnet, the new pools and what the operator should know before applying.
 func (m *Manager) checkSubnet(ctx context.Context, id int64, in *SubnetInput) (*kea.Subnet, []kea.Pool, []string, error) {
-	subnets, err := m.subnets(ctx)
+	config, err := m.source(ctx).client.ConfigGet(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	subnets, err := kea.ParseSubnets(config)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	classes, err := kea.ParseClasses(config)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -106,11 +119,13 @@ func (m *Manager) checkSubnet(ctx context.Context, id int64, in *SubnetInput) (*
 	if in.ValidLifetime <= 0 || in.ValidLifetime > maxLifetime {
 		problems = append(problems, fmt.Sprintf("lease lifetime must be between 1 and %d seconds", int64(maxLifetime)))
 	}
+	classWarnings, classProblems := checkAdditionalClasses(subnet, classes, in)
+	problems = append(problems, classProblems...)
 	if len(problems) > 0 {
 		return nil, nil, nil, &ValidationError{Problems: problems}
 	}
 
-	var warnings []string
+	warnings := classWarnings
 	if len(pools) == 0 {
 		warnings = append(warnings, "without a pool, only clients with a reservation get an address")
 	}
@@ -142,6 +157,82 @@ func (m *Manager) checkSubnet(ctx context.Context, id int64, in *SubnetInput) (*
 		warnings = append(warnings, fmt.Sprintf("%d reservations now lie inside a pool: %s", len(inside), listAddresses(inside)))
 	}
 	return subnet, pools, warnings, nil
+}
+
+// checkAdditionalClasses checks the additional classes of a subnet edit. It warns
+// when an option the subnet sets itself hides the same option of such a class:
+// the subnet wins over every class.
+func checkAdditionalClasses(subnet *kea.Subnet, classes []kea.Class, in *SubnetInput) (warnings, problems []string) {
+	if in.AdditionalClasses == nil {
+		return nil, nil
+	}
+	list := *in.AdditionalClasses
+	if len(list) > maxAdditionalClasses {
+		return nil, []string{fmt.Sprintf("at most %d additional classes", maxAdditionalClasses)}
+	}
+	own := ownAfterEdit(subnet, in)
+	seen := map[string]bool{}
+	for _, name := range list {
+		i := slices.IndexFunc(classes, func(c kea.Class) bool { return c.Name == name })
+		switch {
+		case seen[name]:
+			problems = append(problems, fmt.Sprintf("class %s is listed twice", name))
+			continue
+		case i < 0:
+			problems = append(problems, fmt.Sprintf("class %s does not exist", name))
+			continue
+		}
+		seen[name] = true
+		c := classes[i]
+		if !c.Additional {
+			warnings = append(warnings, fmt.Sprintf("class %s is not marked as additional, so Kea evaluates it for every client already and here once more", name))
+		}
+		for _, o := range c.Options {
+			if own[o.Code] || own[kea.StandardCode(o.Name)] {
+				warnings = append(warnings, fmt.Sprintf("the subnet sets %s itself, which wins over class %s: clear it in the subnet to let the class apply", o.Name, name))
+			}
+		}
+	}
+	return warnings, problems
+}
+
+// ownAfterEdit returns the codes of the options the subnet sets itself once the
+// edit is applied.
+func ownAfterEdit(subnet *kea.Subnet, in *SubnetInput) map[int64]bool {
+	own := map[int64]bool{}
+	for _, o := range subnet.Options {
+		if o.Source == kea.SourceSubnet {
+			own[o.Code] = true
+			own[kea.StandardCode(o.Name)] = true
+		}
+	}
+	if optionChanged(in.Gateways, subnet.OwnGateways(), subnet.Gateways()) {
+		own[3] = len(in.Gateways) > 0
+	}
+	if optionChanged(in.DNSServers, subnet.OwnDNSServers(), subnet.DNSServers()) {
+		own[6] = len(in.DNSServers) > 0
+	}
+	delete(own, 0)
+	return own
+}
+
+// additionalChanged tells whether a subnet edit changes the additional classes.
+func additionalChanged(subnet *kea.Subnet, in *SubnetInput) bool {
+	return in.AdditionalClasses != nil && !slices.Equal(*in.AdditionalClasses, subnet.AdditionalClasses)
+}
+
+// setAdditionalClasses writes the list under its Kea 3.0 name and drops the old one.
+func setAdditionalClasses(raw map[string]any, list []string) {
+	delete(raw, "require-client-classes")
+	if len(list) == 0 {
+		delete(raw, "evaluate-additional-classes")
+		return
+	}
+	out := make([]any, 0, len(list))
+	for _, name := range list {
+		out = append(out, name)
+	}
+	raw["evaluate-additional-classes"] = out
 }
 
 // CheckSubnet returns the warnings a change would produce, without applying it.
@@ -209,6 +300,9 @@ func applySubnet(raw map[string]any, subnet *kea.Subnet, pools []kea.Pool, in *S
 	}
 	if subnet.ValidLifetime == nil || *subnet.ValidLifetime != in.ValidLifetime {
 		setLifetime(raw, "valid-lifetime", in.ValidLifetime)
+	}
+	if additionalChanged(subnet, in) {
+		setAdditionalClasses(raw, *in.AdditionalClasses)
 	}
 
 	prepareSubnetUpdate(raw)
@@ -292,6 +386,11 @@ func (m *Manager) UpdateSubnet(ctx context.Context, user string, id int64, in Su
 				{"domain-name-servers", in.DNSServers, optionChanged(in.DNSServers, subnet.OwnDNSServers(), subnet.DNSServers())},
 			}
 			lifetimes := []lifetimeCheck{{"valid-lifetime", in.ValidLifetime, subnet.ValidLifetime == nil || *subnet.ValidLifetime != in.ValidLifetime}}
+			if additionalChanged(subnet, &in) {
+				if got := stringList(raw["evaluate-additional-classes"]); !slices.Equal(got, *in.AdditionalClasses) {
+					return fmt.Errorf("additional classes are %v instead of %v", got, *in.AdditionalClasses)
+				}
+			}
 			return verifySubnet(ctx, k, raw, id, kept, checks, lifetimes)
 		},
 	}), nil
@@ -371,4 +470,16 @@ func verifySubnet(ctx context.Context, k *kea.Client, raw map[string]any, id int
 		}
 	}
 	return nil
+}
+
+// stringList reads a JSON list of strings; anything else is left out.
+func stringList(v any) []string {
+	list, _ := v.([]any)
+	out := []string{}
+	for _, item := range list {
+		if text, ok := item.(string); ok {
+			out = append(out, text)
+		}
+	}
+	return out
 }

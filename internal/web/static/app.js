@@ -1292,6 +1292,8 @@ pages.subnets = params => {
 
 function classDialog(existing, reload) {
   const name = h('input', { class: 'mono-input', required: true, disabled: !!existing, value: existing?.name || '' });
+  const test = h('input', { class: 'mono-input', value: existing?.test || '', placeholder: "not member('direct-dns')" });
+  const additional = h('input', { type: 'checkbox', checked: !!existing?.additional });
   const options = h('div', {});
   (existing?.options || [{}]).forEach(o => optionRow(options, o));
   const error = h('div');
@@ -1301,7 +1303,7 @@ function classDialog(existing, reload) {
       ev.preventDefault();
       save.disabled = true;
       error.replaceChildren();
-      const body = { name: name.value.trim(), options: readRows(options) };
+      const body = { name: name.value.trim(), test: test.value.trim(), additional: additional.checked, options: readRows(options) };
       try {
         showResult(existing
           ? await api('PUT', 'classes/' + encodeURIComponent(existing.name), body)
@@ -1314,6 +1316,9 @@ function classDialog(existing, reload) {
   },
     h('h2', {}, existing ? `Edit class ${existing.name}` : 'Create class'),
     field('Name', name),
+    field('Test (empty: only where assigned)', test),
+    h('label', { class: 'check' }, additional, 'Additional class: only where a subnet lists it, tested after the reservation lookup'),
+    h('p', { class: 'muted' }, "An additional class can test classes that reservations assign, such as not member('direct-dns'). A test may only name classes listed above it."),
     h('div', { class: 'field' }, h('label', {}, 'DHCP options'), options,
       h('div', {}, h('button', { type: 'button', class: 'small', onclick: () => optionRow(options, {}) }, 'Add option'))),
     error,
@@ -1329,7 +1334,10 @@ pages.classes = params => {
     empty: 'No client classes',
     initialSort: 'name',
     columns: [
-      { key: 'name', label: 'Class', class: 'mono', search: r => r.name },
+      {
+        key: 'name', label: 'Class', class: 'mono', search: r => r.name,
+        render: r => [r.name, r.additional ? [' ', h('span', { class: 'tag', title: 'Only where a subnet lists it, tested after the reservation lookup' }, 'additional')] : null],
+      },
       {
         key: 'options', label: 'Options', class: 'mono', noSort: true,
         search: r => r.options.map(o => `${o.name} ${o.data}`).join(' '),
@@ -1337,10 +1345,11 @@ pages.classes = params => {
       },
       { key: 'test', label: 'Test', class: 'mono' },
       { key: 'reservations', label: 'Reservations', class: 'mono', render: r => h('a', { href: searchLink('reservations', r.name) }, String(r.reservations)) },
+      { key: 'subnets', label: 'Subnets', class: 'mono', sort: r => r.subnets.length, render: r => r.subnets.length ? h('a', { href: '#/subnets' }, r.subnets.join(', ')) : '–' },
     ],
     actions: meta.writable ? [
       r => editable ? h('button', { class: 'small', onclick: () => classDialog(r, load) }, 'Edit') : null,
-      r => editable && !r.reservations ? h('button', {
+      r => editable && !r.reservations && !r.subnets.length ? h('button', {
         class: 'small danger',
         onclick: () => confirmDialog('Delete class', `Really delete class ${r.name}?`, 'Delete',
           async () => showResult(await api('DELETE', 'classes/' + encodeURIComponent(r.name)), load)),
@@ -1412,10 +1421,27 @@ function ownInput(s, name, values) {
   return h('input', { class: 'mono-input', value: (own || []).join(', '), placeholder: inherited });
 }
 
+// classSetting names the additional classes of a subnet that set an option. The
+// subnet's own value wins over them; without one they win over the global value.
+function classSetting(s, name) {
+  const own = optionSource(s, name) === 'subnet';
+  return (s.additionalClasses ?? []).filter(c => c.options.some(o => o.name === name || (o.code && o.code === OPTION_CODES[name]))).map(c => [' ',
+    h('span', {
+      class: own ? 'tag muted' : 'tag',
+      title: own ? `Class ${c.name} sets it as well, but the subnet's own value wins` : `Class ${c.name} sets it for the clients it applies to`,
+    }, (own ? 'hidden: class ' : 'class ') + c.name)]);
+}
+
 // subnetDialog edits a subnet of kea-dhcp4 or, with v6, of kea-dhcp6. IPv6 has no
 // gateway option, but a preferred lifetime.
-function subnetDialog(s, reload, v6 = false) {
+async function subnetDialog(s, reload, v6 = false) {
   const base = v6 ? 'dhcp6/subnets/' : 'subnets/';
+  // additional classes exist for kea-dhcp4 only; without the class list the
+  // field is left out and the subnet keeps its list
+  const listed = s.additionalClasses?.map(c => c.name) ?? [];
+  const known = v6 ? null : (await api('GET', 'classes').catch(() => null))?.classes;
+  const candidates = known ? [...listed, ...known.filter(c => c.additional && !listed.includes(c.name)).map(c => c.name)] : [];
+  const additional = candidates.map(name => h('input', { type: 'checkbox', 'aria-label': name, checked: listed.includes(name), 'data-name': name }));
   const pools = h('div', {});
   s.pools.forEach(p => poolRow(pools, p.pool, v6));
   const gateways = ownInput(s, 'routers', s.gateways || []);
@@ -1438,6 +1464,7 @@ function subnetDialog(s, reload, v6 = false) {
     gateways: splitList(gateways.value),
     dnsServers: splitList(dns.value),
     validLifetime: Number(lifetime.value),
+    ...(known ? { additionalClasses: additional.filter(c => c.checked).map(c => c.dataset.name) } : {}),
   };
   const apply = async body => showResult(await api('PUT', base + s.id, body), reload);
   const form = h('form', {
@@ -1473,6 +1500,8 @@ function subnetDialog(s, reload, v6 = false) {
     field('DNS servers', dns),
     field(v6 ? 'Valid lifetime (seconds)' : 'Lease lifetime (seconds)', lifetime),
     v6 ? field('Preferred lifetime (seconds)', preferred) : null,
+    additional.length ? h('div', { class: 'field' }, h('label', {}, 'Additional classes, tested after the reservation lookup'),
+      h('div', { class: 'class-list' }, additional.map(c => h('label', {}, c, c.dataset.name)))) : null,
     error,
     h('div', { class: 'dialog-actions' }, h('button', { type: 'button', onclick: closeDialog }, 'Cancel'), save));
   showDialog(form);
@@ -1490,11 +1519,14 @@ function subnetCard(s, editable, reload) {
           dl('Subnet ID', String(s.id)),
           s.sharedNetwork ? dl('Shared Network', s.sharedNetwork) : null,
           dl('Gateway', inheritable(s, 'routers', s.gateways)),
-          dl('DNS', inheritable(s, 'domain-name-servers', s.dnsServers)),
+          dl('DNS', [inheritable(s, 'domain-name-servers', s.dnsServers), classSetting(s, 'domain-name-servers')]),
           dl('Lease lifetime', s.validLifetime != null ? fmtDuration(s.validLifetime) : '–'),
           s.outsidePools != null ? dl('Leases outside pools', fmtCount(s.outsidePools)) : null,
           dl('Reservations', h('a', { href: `#/reservations?subnet=${encodeURIComponent(s.subnet)}` }, fmtCount(s.reservations))),
           s.declined ? dl('Declined', fmtCount(s.declined)) : null,
+          s.additionalClasses?.length ? dl('Additional classes', s.additionalClasses.map(c => h('div', {},
+            h('a', { class: 'tag', href: '#/classes', title: c.test ? 'Applies if the client matches ' + c.test : 'Applies to every client of the subnet' }, c.name),
+            c.missing ? h('span', { class: 'state crit' }, 'missing') : ' ' + c.options.map(o => `${o.name || o.code}=${o.data}`).join(', ')))) : null,
           s.options.filter(o => !['routers', 'domain-name-servers'].includes(o.name)).map(o => dl(o.name || `Option ${o.code}`, o.data || '–'))),
         h('div', {}, s.pools.length
           ? s.pools.map(p => meterRow(p.pool, p.assigned, p.total, p.percent))

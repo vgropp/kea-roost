@@ -29,8 +29,9 @@ lease into a static DHCP reservation in two clicks.
 
 - **Leases and reservations:** search, filters, MAC vendors, change the MAC, classes and DHCP
   options, and a reservation from a lease in two clicks.
-- **Client classes, subnets and global options:** edit classes, pools, gateway, DNS
-  servers, lease lifetime and the options for all clients.
+- **Client classes, subnets and global options:** edit classes with their tests,
+  pools, gateway, DNS servers, lease lifetime, the additional classes of a subnet and
+  the options for all clients. See [Kea configuration](docs/kea-configuration.md#client-classes).
 - **[Accounts](docs/accounts.md):** several users as admin or viewer, a login form,
   optional 2FA with TOTP, and setup of the first admin.
 - **[IPv6](docs/ipv6.md):** leases, reservations, subnets and prefix delegation of a

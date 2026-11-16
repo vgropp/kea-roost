@@ -77,6 +77,39 @@ The configuration sent back holds what `config-get` returned, including the pass
 of databases and hooks in plain text, as Kea 3.0 reports them. Global options in
 another option space, such as vendor options, cannot be edited here.
 
+## Client classes
+
+Classes are edited on the Client classes page: their options, their `test` and
+whether they are additional. Kea checks the test when it is saved. A test may only
+name classes listed above it.
+
+Options win from weak to strong: global, class, shared network, subnet, pool,
+reservation. So a class beats the global value, but not a value the subnet sets
+itself. Two ways to give most clients one set of DNS servers and a few others another:
+
+- **Simple:** set the usual DNS servers as a [global option](#global-options), and the
+  other ones in a class such as `direct-dns`. Reservations only get the class, the
+  subnet sets no DNS servers.
+- **Per subnet:** a class `lan-dns` with the test `not member('direct-dns')` and the usual
+  DNS servers, marked as additional. The subnet lists it under *Additional classes* in
+  its edit form and sets no DNS servers itself.
+
+  ```json
+  { "name": "lan-dns", "test": "not member('direct-dns')",
+    "only-in-additional-list": true,
+    "option-data": [ { "name": "domain-name-servers", "data": "192.0.2.53" } ] }
+  ```
+
+  The flag is needed because Kea tests other classes before it looks up the
+  reservation, so `member('direct-dns')` would always be false there. An additional
+  class is tested afterwards, and only where a pool, subnet or shared network lists it.
+
+Kea 3.0 renamed `only-if-required` to `only-in-additional-list` and
+`require-client-classes` to `evaluate-additional-classes`. Kea Roost reads both and
+writes the new names. The edit form of a subnet warns when the subnet sets an option
+itself that one of its additional classes sets as well, because the subnet would win.
+A class that a reservation or subnet still uses cannot be deleted.
+
 ## kea-dhcp6
 
 For [IPv6](ipv6.md), `kea-dhcp6` needs the same: a control socket with the same login on

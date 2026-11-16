@@ -1357,3 +1357,42 @@ func TestSubnetOwnOptionByCode(t *testing.T) {
 		t.Errorf("DNS field: %q", got)
 	}
 }
+
+// An additional class tests a class reservations assign, and the subnet lists it.
+func TestAdditionalClassForASubnet(t *testing.T) {
+	b := start(t)
+	b.open("classes", "Client classes")
+	b.poll(`[...document.querySelectorAll('button')].some(b => b.textContent === 'New class' && !b.hidden)`)
+	b.exec(`[...document.querySelectorAll('button')].find(b => b.textContent === 'New class').click()`)
+	b.poll(`document.querySelector('dialog form') !== null`)
+	input := func(label string) string {
+		return `[...document.querySelectorAll('dialog label')].find(l => l.firstChild.textContent.startsWith('` + label + `')).querySelector('input')`
+	}
+	b.exec(input("Name") + `.value = 'lan-dns';` +
+		input("Test") + `.value = "not member('direct-dns')";` +
+		`document.querySelector('dialog label.check input').checked = true;` +
+		`document.querySelector('dialog .option-row input').value = 'domain-name-servers';` +
+		`document.querySelector('dialog .option-row input:nth-child(2)').value = '192.0.2.53';` +
+		`document.querySelector('dialog form').requestSubmit()`)
+	b.poll(`document.querySelector('dialog h2')?.textContent === 'Change succeeded'`)
+	b.exec(`[...document.querySelectorAll('dialog button')].find(b => b.textContent === 'Close').click()`)
+	b.poll(`document.querySelector('tbody').innerText.includes('additional')`)
+
+	b.open("subnets", "Network")
+	b.exec(`document.querySelector('.subnet-edit:not(.global-edit)').click()`)
+	b.poll(`document.querySelector('dialog input[data-name="lan-dns"]') !== null`)
+	if b.text(`String(document.querySelector('dialog input[data-name="direct-dns"]') === null)`) != "true" {
+		t.Error("a class that is not additional is offered")
+	}
+	b.exec(`document.querySelector('dialog input[data-name="lan-dns"]').click(); document.querySelector('dialog form').requestSubmit()`)
+	b.poll(`document.querySelector('dialog h2')?.textContent === 'Change succeeded'`)
+	b.exec(`[...document.querySelectorAll('dialog button')].find(b => b.textContent === 'Close').click()`)
+	b.poll(`document.body.innerText.includes('Additional classes')`)
+	if got := b.text(`[...document.querySelectorAll('dd')].find(d => d.previousSibling.textContent === 'DNS').innerText`); !strings.Contains(got, "class lan-dns") {
+		t.Errorf("DNS %q", got)
+	}
+	raw := b.fake.Config["subnet4"].([]any)[0].(map[string]any)
+	if got := fmt.Sprint(raw["evaluate-additional-classes"]); got != "[lan-dns]" {
+		t.Errorf("subnet %v", raw)
+	}
+}
