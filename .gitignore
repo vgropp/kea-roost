@@ -4,3 +4,4 @@ internal/oui/oui.tsv.gz
 kea-dhcp4.conf.*
 kea-dhcp6.conf.*
 node_modules/
+compose.override.yaml

@@ -33,6 +33,8 @@ var (
 	ErrUnknownUser = errors.New("unknown user")
 	ErrLastAdmin   = errors.New("the last admin cannot be removed or demoted")
 	ErrUserExists  = errors.New("the user already exists")
+	ErrLinked      = errors.New("the account is linked to another single sign-on login already")
+	ErrOnlyLogin   = errors.New("the single sign-on link is the only login of this account; set a password first")
 )
 
 // User is an account of the interface.
@@ -43,8 +45,12 @@ type User struct {
 	Created time.Time `json:"created"`
 	// TOTP is the secret of the second factor, if the user turned it on.
 	TOTP string `json:"totp,omitempty"`
-	// MFA is only filled in for lists, which hold no secrets.
+	// OIDC names the single sign-on login linked to the account, as issuer and
+	// subject. An account created by single sign-on has no password hash.
+	OIDC string `json:"oidc,omitempty"`
+	// MFA and SSO are only filled in for lists, which hold no secrets.
 	MFA bool `json:"mfa,omitempty"`
+	SSO bool `json:"sso,omitempty"`
 }
 
 // Users keeps the accounts in a file in the data directory. An administrator who
@@ -85,7 +91,7 @@ func LoadUsers(dir string) (*Users, error) {
 		return nil, fmt.Errorf("%s: %w", usersFile, err)
 	}
 	for _, user := range list {
-		if !userName.MatchString(user.Name) || (user.Role != RoleAdmin && user.Role != RoleViewer) {
+		if !userName.MatchString(user.Name) || (user.Role != RoleAdmin && user.Role != RoleViewer) || user.Hash == "" && user.OIDC == "" {
 			return nil, fmt.Errorf("%s: invalid user %q", usersFile, user.Name)
 		}
 		key := strings.ToLower(user.Name)
@@ -157,8 +163,8 @@ func (u *Users) List() []User {
 	defer u.mu.Unlock()
 	out := make([]User, 0, len(u.users))
 	for _, user := range u.users {
-		user.MFA = user.TOTP != ""
-		user.Hash, user.TOTP = "", ""
+		user.MFA, user.SSO = user.TOTP != "", user.OIDC != ""
+		user.Hash, user.TOTP, user.OIDC = "", "", ""
 		out = append(out, user)
 	}
 	slices.SortFunc(out, func(a, b User) int { return strings.Compare(a.Name, b.Name) })
@@ -176,6 +182,8 @@ func (u *Users) Get(name string) (User, bool) {
 // Verify checks a login. An unknown name costs as much time as a wrong password.
 func (u *Users) Verify(name, password string) (User, bool) {
 	user, ok := u.Get(name)
+	// an account of single sign-on only has no password to match
+	ok = ok && user.Hash != ""
 	hash := u.dummy
 	if ok {
 		hash = user.Hash
@@ -307,5 +315,88 @@ func (u *Users) Delete(name string) error {
 	if u.admins(next) == 0 {
 		return ErrLastAdmin
 	}
+	return u.save(next)
+}
+
+// FindOIDC returns the account linked to a single sign-on login.
+func (u *Users) FindOIDC(subject string) (User, bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for _, user := range u.users {
+		if subject != "" && user.OIDC == subject {
+			return user, true
+		}
+	}
+	return User{}, false
+}
+
+func (u *Users) linked(subject string) bool {
+	for _, user := range u.users {
+		if user.OIDC == subject {
+			return true
+		}
+	}
+	return false
+}
+
+// LinkOIDC links an existing account to a single sign-on login. An account keeps
+// one link, and a login links one account.
+func (u *Users) LinkOIDC(name, subject string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	key := strings.ToLower(name)
+	user, ok := u.users[key]
+	if !ok {
+		return ErrUnknownUser
+	}
+	if user.OIDC != "" || u.linked(subject) {
+		return ErrLinked
+	}
+	next := maps.Clone(u.users)
+	user.OIDC = subject
+	next[key] = user
+	return u.save(next)
+}
+
+// UnlinkOIDC removes the single sign-on link of an account that has a password.
+func (u *Users) UnlinkOIDC(name string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	key := strings.ToLower(name)
+	user, ok := u.users[key]
+	if !ok {
+		return ErrUnknownUser
+	}
+	if user.Hash == "" {
+		return ErrOnlyLogin
+	}
+	next := maps.Clone(u.users)
+	user.OIDC = ""
+	next[key] = user
+	return u.save(next)
+}
+
+// AddOIDC creates an account for a single sign-on login, without a password.
+func (u *Users) AddOIDC(name string, role Role, subject string, now time.Time) error {
+	if !userName.MatchString(name) {
+		return fmt.Errorf("invalid user name %q: letters, digits and . _ @ - only", name)
+	}
+	if role != RoleAdmin && role != RoleViewer {
+		return fmt.Errorf("unknown role %q", role)
+	}
+	if subject == "" {
+		return errors.New("no single sign-on login")
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	key := strings.ToLower(name)
+	if _, ok := u.users[key]; ok {
+		return ErrUserExists
+	}
+	if u.linked(subject) {
+		return ErrLinked
+	}
+	next := maps.Clone(u.users)
+	next[key] = User{Name: name, Role: role, OIDC: subject, Created: now.UTC()}
 	return u.save(next)
 }

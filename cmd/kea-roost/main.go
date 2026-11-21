@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,6 +21,47 @@ import (
 	"github.com/vgropp/kea-roost/internal/manager"
 	"github.com/vgropp/kea-roost/internal/web"
 )
+
+// singleSignOn prepares the OIDC login. A CA file adds to the system CAs, for a
+// provider with a certificate of its own.
+func singleSignOn(c *config.OIDC) (*web.OIDC, error) {
+	if c == nil {
+		return nil, nil
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if c.CAFile != "" {
+		pem, err := os.ReadFile(c.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("OIDC_CA_FILE: %w", err)
+		}
+		pool, err := x509.SystemCertPool()
+		if err != nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("OIDC_CA_FILE %s holds no PEM certificate", c.CAFile)
+		}
+		transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	}
+	slog.Info("single sign-on", "issuer", c.Issuer, "client", c.ClientID, "roles from groups", c.AdminGroup != "" || c.ViewerGroup != "")
+	return &web.OIDC{
+		Issuer: c.Issuer, ClientID: c.ClientID, ClientSecret: c.ClientSecret, RedirectURL: c.RedirectURL,
+		Label: c.Label, AdminGroup: c.AdminGroup, ViewerGroup: c.ViewerGroup, LinkByName: c.LinkByName,
+		HTTPClient: &http.Client{Timeout: 15 * time.Second, Transport: transport, CheckRedirect: httpsRedirects},
+	}, nil
+}
+
+// httpsRedirects keeps the client secret and the tokens on HTTPS, wherever the
+// provider redirects to.
+func httpsRedirects(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("redirect to %s refused: not https", req.URL.Redacted())
+	}
+	if len(via) >= 5 {
+		return errors.New("too many redirects")
+	}
+	return nil
+}
 
 // version is set when a release is built.
 var version = "dev"
@@ -114,7 +157,15 @@ func run() error {
 	for _, name := range config.Obsolete(os.Getenv) {
 		slog.Warn("setting is no longer used, remove it", "name", name)
 	}
-	handler := web.New(mgr, web.Auth{Users: users, SetupCode: setupCode, TrustedProxies: cfg.TrustedProxies, MetricsUser: cfg.MetricsUser, MetricsPassword: cfg.MetricsPass, MetricsOff: cfg.MetricsOff}, cfg.BasePath)
+	sso, err := singleSignOn(cfg.OIDC)
+	if err != nil {
+		return err
+	}
+	handler := web.New(mgr, web.Auth{
+		Users: users, SetupCode: setupCode, TrustedProxies: cfg.TrustedProxies,
+		MetricsUser: cfg.MetricsUser, MetricsPassword: cfg.MetricsPass, MetricsOff: cfg.MetricsOff,
+		OIDC: sso, PasswordLoginOff: !cfg.PasswordLogin,
+	}, cfg.BasePath)
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           handler,

@@ -139,7 +139,7 @@ func (s *server) loginTOTP(w http.ResponseWriter, r *http.Request) {
 func (s *server) accountInfo(w http.ResponseWriter, r *http.Request) {
 	a, _ := r.Context().Value(contextKey{}).(account)
 	u, _ := s.auth.Users.Get(a.name)
-	writeJSON(w, http.StatusOK, map[string]any{"user": u.Name, "role": u.Role, "totp": u.TOTP != ""})
+	writeJSON(w, http.StatusOK, map[string]any{"user": u.Name, "role": u.Role, "totp": u.TOTP != "", "password": u.Hash != "", "sso": u.OIDC != ""})
 }
 
 // startTOTP makes a new secret. It only becomes active once confirmTOTP gets a matching

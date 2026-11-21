@@ -33,7 +33,8 @@ lease into a static DHCP reservation in two clicks.
   pools, gateway, DNS servers, lease lifetime, the additional classes of a subnet and
   the options for all clients. See [Kea configuration](docs/kea-configuration.md#client-classes).
 - **[Accounts](docs/accounts.md):** several users as admin or viewer, a login form,
-  optional 2FA with TOTP, and setup of the first admin.
+  optional 2FA with TOTP, single sign-on through OpenID Connect such as Authelia, and
+  setup of the first admin.
 - **[IPv6](docs/ipv6.md):** leases, reservations, subnets and prefix delegation of a
   `kea-dhcp6`, linked to the IPv4 devices by MAC, with diagnostics and metrics.
 - **[Address map](docs/address-map.md):** every address at a glance, and the free ranges.
@@ -111,7 +112,7 @@ hosts can block project networks from reaching local services.
 | Page | Content |
 |---|---|
 | [Configuration](docs/configuration.md) | Environment, Settings page, reverse proxy, MAC vendors, themes |
-| [Accounts](docs/accounts.md) | First admin, roles, 2FA, failed logins, lost passwords |
+| [Accounts](docs/accounts.md) | First admin, roles, 2FA, single sign-on, failed logins, lost passwords |
 | [Kea configuration](docs/kea-configuration.md) | What kea-dhcp4 and kea-dhcp6 need: control socket and hooks |
 | [Several servers and HA](docs/several-servers.md) | Peers, comparing, operating HA |
 | [IPv6](docs/ipv6.md) | kea-dhcp6 next to IPv4: setup, pages, linking DUIDs to devices |

@@ -427,6 +427,7 @@ a.addr:hover { outline: 2px solid var(--ink); }
 .auth-box form, dialog form { display: grid; gap: 10px; margin-top: 12px; }
 .auth-field { display: grid; gap: 4px; }
 .auth-field span { color: var(--ink-3); font-size: 12px; }
+.auth-or { text-align: center; margin: 0; }
 .auth-field input, .auth-field select { width: 100%; box-sizing: border-box; }
 .account-button { display: inline-flex; gap: 6px; align-items: center; }
 .totp-qr { display: block; width: 200px; height: 200px; image-rendering: pixelated; background: #fff; padding: 8px; margin: 8px 0; }

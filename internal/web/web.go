@@ -45,6 +45,10 @@ type Auth struct {
 	MetricsPassword string
 	// MetricsOff removes /metrics altogether.
 	MetricsOff bool
+	// OIDC turns on single sign-on.
+	OIDC *OIDC
+	// PasswordLoginOff leaves single sign-on as the only login.
+	PasswordLoginOff bool
 }
 
 type server struct {
@@ -53,6 +57,7 @@ type server struct {
 	sessions *auth_.Sessions
 	limiter  *auth_.Limiter
 	totp     *totpState
+	oidc     *oidcState
 }
 
 type contextKey struct{}
@@ -71,6 +76,7 @@ func New(mgr *manager.Manager, auth Auth, basePath string) http.Handler {
 		sessions: auth_.NewSessions(sessionIdle, sessionAbsolute, time.Now),
 		limiter:  auth_.NewLimiter(mgr.LoginLimits, time.Now),
 		totp:     newTOTPState(),
+		oidc:     newOIDCState(auth.OIDC),
 	}
 	assets, _ := fs.Sub(static, "static")
 
@@ -79,11 +85,14 @@ func New(mgr *manager.Manager, auth Auth, basePath string) http.Handler {
 	mux.HandleFunc("GET /api/session", s.session)
 	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("POST /api/login/totp", s.loginTOTP)
+	mux.HandleFunc("GET /api/login/oidc", s.startOIDC)
+	mux.HandleFunc("GET /api/login/oidc/callback", s.oidcCallback)
 	mux.HandleFunc("GET /api/account", s.accountInfo)
 	mux.HandleFunc("POST /api/account/totp", s.startTOTP)
 	mux.HandleFunc("GET /api/account/totp/qr", s.totpQR)
 	mux.HandleFunc("POST /api/account/totp/confirm", s.confirmTOTP)
 	mux.HandleFunc("DELETE /api/account/totp", s.removeTOTP)
+	mux.HandleFunc("POST /api/account/sso-link", s.startLink)
 	mux.HandleFunc("POST /api/logout", s.logout)
 	mux.HandleFunc("POST /api/setup", s.setup)
 	mux.HandleFunc("PUT /api/account/password", s.changePassword)
@@ -227,7 +236,7 @@ func (s *server) metricsLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // Paths that work without a session: the interface itself and what it needs to log in.
-var publicAPI = map[string]bool{"/api/session": true, "/api/login": true, "/api/login/totp": true, "/api/logout": true, "/api/setup": true}
+var publicAPI = map[string]bool{"/api/session": true, "/api/login": true, "/api/login/totp": true, "/api/login/oidc": true, "/api/login/oidc/callback": true, "/api/logout": true, "/api/setup": true}
 
 func (s *server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

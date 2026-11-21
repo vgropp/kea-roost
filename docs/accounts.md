@@ -54,6 +54,67 @@ the data volume like the passwords of all accounts. The last used code is kept i
 memory only, so after a restart it works once more within its 30 seconds. If a device
 is lost, an admin resets 2FA of that account under Users.
 
+## Single sign-on
+
+Kea Roost can leave the login to an OpenID Connect provider such as Authelia. The
+login form then shows a button for it, next to the password, or instead of it with
+`PASSWORD_LOGIN=false`. A second factor is then the provider's business: a login
+through it does not ask for the TOTP code of Kea Roost.
+
+Register Kea Roost as a client at the provider. For Authelia, in its
+`configuration.yml`:
+
+```yaml
+identity_providers:
+  oidc:
+    clients:
+      - client_id: kea-roost
+        client_name: Kea Roost
+        client_secret: '$pbkdf2-sha512$...'   # authelia crypto hash generate
+        redirect_uris: [ 'https://roost.example.com/api/login/oidc/callback' ]
+        scopes: [ openid, profile, groups ]
+        authorization_policy: two_factor
+        require_pkce: true
+        pkce_challenge_method: S256
+        token_endpoint_auth_method: client_secret_basic
+```
+
+and in `.env` of Kea Roost:
+
+    OIDC_ISSUER=https://auth.example.com
+    OIDC_CLIENT_ID=kea-roost
+    OIDC_CLIENT_SECRET=the secret before hashing
+    OIDC_REDIRECT_URL=https://roost.example.com/api/login/oidc/callback
+    OIDC_LABEL=Authelia
+
+Kea Roost asks for the scopes `openid`, `profile` and `groups`, checks the signature
+and nonce of the ID token and uses PKCE. It reads the user name
+(`preferred_username`) and the groups from the UserInfo endpoint, where Authelia puts
+them, and checks that UserInfo describes the same person as the ID token.
+
+**Existing accounts.** Log in with the password as before, open the account menu and
+choose *Link with ...*. After the login at the provider, the account is linked and
+single sign-on logs into it; the audit log records the link. Linking needs the
+password and 2FA of the account, so a login at the provider alone never takes an
+account over. The link names the login at the provider for good, not its name: a
+renamed user keeps the account. An admin can remove a link under Users. The password
+stays, as a way in while the provider is down.
+
+`OIDC_LINK_BY_NAME=true` links the first login to the account of the same name
+instead, without asking. Turn it on only if nobody can choose or change their name at
+the provider: whoever logs in there as `admin` gets the account `admin`, and its 2FA
+does not ask.
+
+**Roles.** Without `OIDC_ADMIN_GROUP` and `OIDC_VIEWER_GROUP`, only existing accounts
+log in, with the role they have. With them, the groups decide the role at each login,
+a login in neither group is refused, and a new user gets an account without a
+password. A login that would take the admin role from the last admin is refused:
+give the account the admin group at the provider, or make another admin first.
+
+Logging out ends the session of Kea Roost, not the one at the provider. Logins on
+their way to the provider are counted per address, so behind a proxy name it in
+`MANAGER_TRUSTED_PROXIES`, as for failed logins.
+
 ## Failed logins
 
 After 10 failed logins within 15 minutes, further logins of that address and of that

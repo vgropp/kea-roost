@@ -152,8 +152,13 @@ func startWith(t *testing.T, accounts web.Auth, loggedIn bool) *browser {
 	}))
 	t.Cleanup(dashboard.Close)
 	mgr.SetAPDashboard(dashboard.URL)
-	handler := web.New(mgr, testAuth(t, accounts), "")
-	srv := httptest.NewServer(handler)
+	// the address is known before the handler, for the callback of single sign-on
+	srv := httptest.NewUnstartedServer(nil)
+	if accounts.OIDC != nil && accounts.OIDC.RedirectURL == "" {
+		accounts.OIDC.RedirectURL = "http://" + srv.Listener.Addr().String() + "/api/login/oidc/callback"
+	}
+	srv.Config.Handler = web.New(mgr, testAuth(t, accounts), "")
+	srv.Start()
 	t.Cleanup(srv.Close)
 	// every page starts logged in; the login form has tests of its own
 
@@ -1421,5 +1426,39 @@ func TestAdditionalClassForASubnet(t *testing.T) {
 	raw := b.fake.Config["subnet4"].([]any)[0].(map[string]any)
 	if got := fmt.Sprint(raw["evaluate-additional-classes"]); got != "[lan-dns]" {
 		t.Errorf("subnet %v", raw)
+	}
+}
+
+// The whole single sign-on in the browser, the way the docs recommend: link the
+// account in the account menu, log out, log in at the provider. A refused login
+// shows why on the login form.
+func TestSingleSignOnInTheBrowser(t *testing.T) {
+	idp := newProvider(t, true)
+	idp.set(func(p *provider) { p.name = "a-name-that-matches-nothing" })
+	sso := &web.OIDC{Issuer: idp.srv.URL, ClientID: clientID, ClientSecret: clientSecret, Label: "Authelia"}
+	b := startWith(t, web.Auth{OIDC: sso}, true)
+	b.open("dashboard", "Dashboard")
+	b.exec(`document.querySelector('.account-button').click()`)
+	// linking asks for the password, like a new password does
+	b.poll(`[...document.querySelectorAll('dialog button')].some(x => x.textContent === 'Link with Authelia')`)
+	b.exec(`(() => {
+		const form = [...document.querySelectorAll('dialog form')].find(f => f.textContent.includes('Link with Authelia'));
+		form.querySelector('input[type="password"]').value = ` + "`" + adminPassword + "`" + `;
+		form.requestSubmit();
+	})()`)
+	b.poll(`document.querySelector('dialog')?.textContent.includes('Your account is linked')`)
+	b.poll(`document.querySelector('dialog')?.textContent.includes('Linked with Authelia.')`)
+	b.click(`[...document.querySelectorAll('dialog button')].find(x => x.textContent === 'Log out')`)
+	b.click(`[...document.querySelectorAll('button')].find(x => x.textContent === 'Log in with Authelia')`)
+	b.poll(`document.querySelector('h1')?.textContent === 'Dashboard'`)
+	b.poll(`document.querySelector('.account-button')?.textContent.includes('admin')`)
+
+	idp.set(func(p *provider) { p.sub, p.name = "stranger-sub", "stranger" })
+	b.exec(`document.querySelector('.account-button').click()`)
+	b.click(`[...document.querySelectorAll('dialog button')].find(x => x.textContent === 'Log out')`)
+	b.click(`[...document.querySelectorAll('button')].find(x => x.textContent === 'Log in with Authelia')`)
+	b.poll(`document.body.textContent.includes('There is no Kea Roost account for this login')`)
+	if got := b.text(`location.search`); got != "" {
+		t.Errorf("the reason stays in the address: %q", got)
 	}
 }

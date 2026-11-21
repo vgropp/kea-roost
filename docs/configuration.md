@@ -25,6 +25,14 @@ Kea Roost reads its settings from environment variables, usually `.env`.
 | `MANAGER_BASE_PATH` | Subpath behind a proxy that keeps it, e.g. `/kea-roost` | empty |
 | `MANAGER_TRUSTED_PROXIES` | Proxies whose `X-Forwarded-For` is trusted, comma separated | empty |
 | `MANAGER_DATA_DIR` | Accounts, settings, backups and audit log | `/var/lib/kea-roost`, `/data` in the image |
+| `OIDC_ISSUER` | HTTPS address of an OpenID Connect provider such as Authelia, see [Single sign-on](accounts.md#single-sign-on) | off |
+| `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | Client of Kea Roost at the provider | required with `OIDC_ISSUER` |
+| `OIDC_REDIRECT_URL` | Address of Kea Roost followed by `/api/login/oidc/callback` | required with `OIDC_ISSUER` |
+| `OIDC_ADMIN_GROUP`, `OIDC_VIEWER_GROUP` | Groups at the provider that give the role at each login and create accounts | empty: only existing accounts |
+| `OIDC_LINK_BY_NAME` | `true` links the first login to the account of the same name, see the warning in [Single sign-on](accounts.md#single-sign-on) | `false` |
+| `OIDC_LABEL` | Name of the provider on the login button | `single sign-on` |
+| `OIDC_CA_FILE` | CA for a provider with a certificate of its own | system CAs |
+| `PASSWORD_LOGIN` | `false` leaves single sign-on as the only login | `true` |
 
 Two more are read by `compose.yaml` only: `MANAGER_PORT`, the port on the Docker host
 (default `8080`), and `KEA_ROOST_VERSION`, the image tag (default `latest`, see the
@@ -32,9 +40,10 @@ Two more are read by `compose.yaml` only: `MANAGER_PORT`, the port on the Docker
 `MANAGER_USER` settings of earlier versions are no longer read; the start names them
 when they are still set. The windows of the ARP monitor are on the Settings page now.
 
-All `kea-dhcp6` and peer sockets use the login of `KEA_URL`. `KEA_PASSWORD` and
-`METRICS_PASSWORD` can also come from a file through `KEA_PASSWORD_FILE` and
-`METRICS_PASSWORD_FILE`, such as a Docker secret.
+All `kea-dhcp6` and peer sockets use the login of `KEA_URL`. `KEA_PASSWORD`,
+`METRICS_PASSWORD` and `OIDC_CLIENT_SECRET` can also come from a file through
+`KEA_PASSWORD_FILE`, `METRICS_PASSWORD_FILE` and `OIDC_CLIENT_SECRET_FILE`, such as a
+Docker secret.
 
 Backups contain the Kea configuration with its passwords in plain text, so do not expose
 Kea Roost unprotected. It speaks HTTP only; TLS belongs in a proxy in front.

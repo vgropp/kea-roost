@@ -21,14 +21,15 @@ var routePattern = regexp.MustCompile(`mux\.HandleFunc\("([A-Z]+) (/api/[^"]*)",
 var apiRegistration = regexp.MustCompile(`\.Handle(?:Func)?\("[^"]*/api/`)
 
 // Without a login, only these answer.
-var publicRoutes = map[string]bool{"/api/session": true, "/api/login": true, "/api/login/totp": true, "/api/logout": true, "/api/setup": true}
+var publicRoutes = map[string]bool{"/api/session": true, "/api/login": true, "/api/login/totp": true, "/api/logout": true, "/api/setup": true,
+	"/api/login/oidc": true, "/api/login/oidc/callback": true}
 
 // Writes that are not behind s.writer: the login itself and what every user may do
 // with the own account.
 var ownWrites = map[string]bool{
 	"POST /api/login": true, "POST /api/login/totp": true, "POST /api/logout": true, "POST /api/setup": true,
 	"POST /api/account/totp": true, "POST /api/account/totp/confirm": true, "DELETE /api/account/totp": true,
-	"PUT /api/account/password": true,
+	"PUT /api/account/password": true, "POST /api/account/sso-link": true,
 }
 
 func TestEveryRouteIsGuarded(t *testing.T) {

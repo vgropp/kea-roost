@@ -148,7 +148,10 @@ func (s *server) record(user, action, target string) {
 
 func (s *server) session(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.account(r)
-	body := map[string]any{"setup": s.auth.Users.Empty()}
+	body := map[string]any{"setup": s.auth.Users.Empty(), "passwordLogin": !s.auth.PasswordLoginOff}
+	if sso := s.oidcInfo(); sso != nil {
+		body["sso"] = sso
+	}
 	if ok {
 		body["user"], body["role"] = a.name, a.role
 	}
@@ -161,6 +164,10 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if !readJSON(w, r, &in) {
+		return
+	}
+	if s.auth.PasswordLoginOff {
+		writeJSON(w, http.StatusForbidden, errorBody{Error: "log in with single sign-on"})
 		return
 	}
 	address, user := s.clientKey(r), userKey(in.Name)
@@ -247,7 +254,7 @@ func writeUserError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, auth_.ErrUnknownUser):
 		writeJSON(w, http.StatusNotFound, errorBody{Error: err.Error()})
-	case errors.Is(err, auth_.ErrUserExists), errors.Is(err, auth_.ErrLastAdmin):
+	case errors.Is(err, auth_.ErrUserExists), errors.Is(err, auth_.ErrLastAdmin), errors.Is(err, auth_.ErrOnlyLogin), errors.Is(err, auth_.ErrLinked):
 		writeJSON(w, http.StatusConflict, errorBody{Error: err.Error()})
 	default:
 		writeJSON(w, http.StatusUnprocessableEntity, errorBody{Error: "invalid input", Problems: []string{err.Error()}})
@@ -296,6 +303,8 @@ type userInput struct {
 	Password string     `json:"password"`
 	// ResetTOTP turns off the second factor of a user who lost the device.
 	ResetTOTP bool `json:"resetTotp"`
+	// UnlinkSSO removes the single sign-on link, so that another login can take it.
+	UnlinkSSO bool `json:"unlinkSso"`
 }
 
 func (s *server) createUser(w http.ResponseWriter, r *http.Request) {
@@ -323,11 +332,19 @@ func (s *server) updateUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, errorBody{Error: "change your own password and 2FA in the account menu"})
 		return
 	}
+	// unlinking can be refused, so it goes first and nothing else changes then
+	changes := []string{}
+	if in.UnlinkSSO {
+		if err := s.auth.Users.UnlinkOIDC(name); err != nil {
+			writeUserError(w, err)
+			return
+		}
+		changes = append(changes, "single sign-on unlinked")
+	}
 	if err := s.auth.Users.Update(name, in.Role, in.Password, in.ResetTOTP); err != nil {
 		writeUserError(w, err)
 		return
 	}
-	changes := []string{}
 	if in.Password != "" || in.ResetTOTP {
 		s.totp.forget(name)
 		s.totp.dropTickets(name)

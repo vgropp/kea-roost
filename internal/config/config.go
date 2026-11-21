@@ -40,7 +40,29 @@ type Config struct {
 	ARPMonitorURL  string
 	APDashboardURL string
 	BasePath       string
+	OIDC           *OIDC
+	// PasswordLogin is false when only single sign-on may log in.
+	PasswordLogin bool
 }
+
+// OIDC is the single sign-on through an OpenID Connect provider such as Authelia.
+type OIDC struct {
+	Issuer       string
+	ClientID     string
+	ClientSecret string
+	RedirectURL  string
+	Label        string
+	CAFile       string
+	// AdminGroup and ViewerGroup give the role at each login. Without them only
+	// existing accounts log in, with the role they have.
+	AdminGroup  string
+	ViewerGroup string
+	// LinkByName links the first login to an account of the same name.
+	LinkByName bool
+}
+
+// callbackPath is where the provider sends the browser back to.
+const callbackPath = "/api/login/oidc/callback"
 
 // Peer is a further Kea server that gets every change. It uses the credentials of
 // the primary.
@@ -153,7 +175,71 @@ func Load(getenv func(string) string) (*Config, error) {
 	if (c.MetricsUser == "") != (c.MetricsPass == "") {
 		return nil, errors.New("METRICS_USER and METRICS_PASSWORD must be set together")
 	}
+	if c.OIDC, err = loadOIDC(getenv); err != nil {
+		return nil, err
+	}
+	if c.PasswordLogin, err = boolSetting(getenv, "PASSWORD_LOGIN", true); err != nil {
+		return nil, err
+	}
+	if !c.PasswordLogin && c.OIDC == nil {
+		return nil, errors.New("PASSWORD_LOGIN=false needs OIDC_ISSUER, or nobody could log in")
+	}
 	return c, nil
+}
+
+func loadOIDC(getenv func(string) string) (*OIDC, error) {
+	o := &OIDC{
+		Issuer:      strings.TrimRight(getenv("OIDC_ISSUER"), "/"),
+		ClientID:    getenv("OIDC_CLIENT_ID"),
+		RedirectURL: getenv("OIDC_REDIRECT_URL"),
+		Label:       or(getenv("OIDC_LABEL"), "single sign-on"),
+		CAFile:      getenv("OIDC_CA_FILE"),
+		AdminGroup:  getenv("OIDC_ADMIN_GROUP"),
+		ViewerGroup: getenv("OIDC_VIEWER_GROUP"),
+	}
+	var err error
+	if o.ClientSecret, err = secret(getenv, "OIDC_CLIENT_SECRET"); err != nil {
+		return nil, err
+	}
+	// off by default: a name at the provider is not proof of owning the account here
+	if o.LinkByName, err = boolSetting(getenv, "OIDC_LINK_BY_NAME", false); err != nil {
+		return nil, err
+	}
+	if o.Issuer == "" {
+		for _, name := range []string{"OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_REDIRECT_URL", "OIDC_ADMIN_GROUP", "OIDC_VIEWER_GROUP"} {
+			if getenv(name) != "" || getenv(name+"_FILE") != "" {
+				return nil, fmt.Errorf("%s needs OIDC_ISSUER", name)
+			}
+		}
+		return nil, nil
+	}
+	// the provider signs the logins, so its address must not be open to tampering
+	if u, err := url.Parse(o.Issuer); err != nil || u.Scheme != "https" || u.Host == "" {
+		return nil, fmt.Errorf("OIDC_ISSUER %q is not an https URL", o.Issuer)
+	}
+	if o.ClientID == "" || o.ClientSecret == "" {
+		return nil, errors.New("OIDC_ISSUER needs OIDC_CLIENT_ID and OIDC_CLIENT_SECRET")
+	}
+	u, err := url.Parse(o.RedirectURL)
+	if err != nil || !isHTTPURL(o.RedirectURL) || !strings.HasSuffix(u.Path, callbackPath) || u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("OIDC_REDIRECT_URL %q must be the address of Kea Roost followed by %s", o.RedirectURL, callbackPath)
+	}
+	if o.AdminGroup != "" && o.AdminGroup == o.ViewerGroup {
+		return nil, errors.New("OIDC_ADMIN_GROUP and OIDC_VIEWER_GROUP must differ")
+	}
+	return o, nil
+}
+
+func boolSetting(getenv func(string) string, name string, fallback bool) (bool, error) {
+	text := getenv(name)
+	if text == "" {
+		return fallback, nil
+	}
+	v, err := strconv.ParseBool(text)
+	if err != nil {
+		return false, fmt.Errorf("%s %q is neither true nor false", name, text)
+	}
+	return v, nil
 }
 
 // parsePeers reads a list like "standby=http://192.0.2.2:8051,other=http://...".

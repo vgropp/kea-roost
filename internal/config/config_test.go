@@ -144,3 +144,52 @@ func TestPeers6(t *testing.T) {
 		t.Fatal("the name of the primary was accepted")
 	}
 }
+
+func oidcEnv(extra map[string]string) map[string]string {
+	values := map[string]string{
+		"KEA_URL": "http://kea", "OIDC_ISSUER": "https://auth.example/", "OIDC_CLIENT_ID": "kea-roost",
+		"OIDC_CLIENT_SECRET": "secret", "OIDC_REDIRECT_URL": "https://roost.example/api/login/oidc/callback",
+	}
+	for k, v := range extra {
+		values[k] = v
+	}
+	return values
+}
+
+func TestOIDC(t *testing.T) {
+	c, err := Load(env(oidcEnv(nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.OIDC == nil || c.OIDC.Issuer != "https://auth.example" || c.OIDC.LinkByName || c.OIDC.Label != "single sign-on" || !c.PasswordLogin {
+		t.Fatalf("got %+v %+v", c, c.OIDC)
+	}
+	c, err = Load(env(oidcEnv(map[string]string{"PASSWORD_LOGIN": "false", "OIDC_LINK_BY_NAME": "true", "OIDC_REDIRECT_URL": "https://example/roost/api/login/oidc/callback"})))
+	if err != nil || c.PasswordLogin || !c.OIDC.LinkByName {
+		t.Fatalf("got %+v %v", c, err)
+	}
+	if c, err = Load(env(map[string]string{"KEA_URL": "http://kea"})); err != nil || c.OIDC != nil {
+		t.Fatalf("without OIDC: %+v %v", c, err)
+	}
+}
+
+func TestInvalidOIDC(t *testing.T) {
+	cases := map[string]map[string]string{
+		"plain http":       oidcEnv(map[string]string{"OIDC_ISSUER": "http://auth.example"}),
+		"no secret":        oidcEnv(map[string]string{"OIDC_CLIENT_SECRET": ""}),
+		"no client":        oidcEnv(map[string]string{"OIDC_CLIENT_ID": ""}),
+		"wrong callback":   oidcEnv(map[string]string{"OIDC_REDIRECT_URL": "https://roost.example/"}),
+		"query":            oidcEnv(map[string]string{"OIDC_REDIRECT_URL": "https://roost.example/api/login/oidc/callback?x=1"}),
+		"same groups":      oidcEnv(map[string]string{"OIDC_ADMIN_GROUP": "a", "OIDC_VIEWER_GROUP": "a"}),
+		"flag":             oidcEnv(map[string]string{"OIDC_LINK_BY_NAME": "maybe"}),
+		"without issuer":   {"KEA_URL": "http://kea", "OIDC_CLIENT_ID": "kea-roost"},
+		"nobody can login": {"KEA_URL": "http://kea", "PASSWORD_LOGIN": "false"},
+	}
+	for name, values := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(env(values)); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}

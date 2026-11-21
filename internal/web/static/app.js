@@ -30,6 +30,8 @@ const view = document.getElementById('view');
 const dialog = /** @type {HTMLDialogElement} */ (document.getElementById('dialog'));
 let dialogGeneration = 0;
 let meta = { writable: false, serverName: '' };
+// the single sign-on provider, if Kea Roost has one
+let ssoInfo = null;
 
 const AUTH_PATHS = ['session', 'login', 'login/totp', 'setup', 'logout'];
 
@@ -2218,8 +2220,46 @@ function authField(label, input) {
   return h('label', { class: 'auth-field' }, h('span', {}, label), input);
 }
 
-function loginView() {
+// Why a single sign-on came back without a login. The provider's own text is not
+// shown, so that it cannot put anything into the page.
+const SSO_ERRORS = {
+  denied: 'The login was cancelled or refused at the provider.',
+  expired: 'The login took too long or was started in another browser. Try again.',
+  unreachable: 'The single sign-on provider cannot be reached. The log of Kea Roost tells more.',
+  failed: 'The single sign-on failed. The log of Kea Roost tells why.',
+  unknown: 'There is no Kea Roost account for this login. An admin can create one of the same name, or let groups decide the role.',
+  nogroup: 'This login is in none of the groups that may use Kea Roost.',
+  taken: 'This login or this account is linked already. An admin can remove the link under Users.',
+  lastadmin: 'The provider no longer gives this account the admin role, but it is the last admin. Give it the admin group at the provider, or make another admin first.',
+};
+
+// ssoButton starts the login at the provider; a full page load, since the browser
+// leaves for the provider and comes back.
+function ssoButton(session, primary) {
+  if (!session?.sso) return null;
+  return h('button', { type: 'button', class: primary ? 'primary' : '', onclick: () => { location.href = 'api/login/oidc'; } },
+    `Log in with ${session.sso.label}`);
+}
+
+// ssoNotice shows the reason the provider sent the browser back with, once.
+function ssoNotice() {
+  const params = new URLSearchParams(location.search);
+  const reason = params.get('sso');
+  if (!reason) return null;
+  history.replaceState(null, '', location.pathname + location.hash);
+  // the reason comes from the address: only own keys count, not what objects inherit
+  return h('div', { class: 'notes' }, h('div', { class: 'note crit' }, Object.hasOwn(SSO_ERRORS, reason) ? SSO_ERRORS[reason] : SSO_ERRORS.failed));
+}
+
+function loginView(session) {
   const error = h('div');
+  const notice = ssoNotice();
+  if (notice) error.append(notice);
+  const sso = ssoButton(session, !session?.passwordLogin);
+  if (session && !session.passwordLogin) {
+    authBox('Log in', '', h('form', { onsubmit: event => event.preventDefault() }, sso), error);
+    return;
+  }
   const name = h('input', { name: 'username', autocomplete: 'username', required: true });
   const password = h('input', { name: 'password', type: 'password', autocomplete: 'current-password', required: true });
   const submit = async event => {
@@ -2235,7 +2275,8 @@ function loginView() {
     }
   };
   authBox('Log in', '', h('form', { onsubmit: submit }, authField('User name', name), authField('Password', password),
-    h('button', { class: 'primary', type: 'submit' }, 'Log in')), error);
+    h('button', { class: 'primary', type: 'submit' }, 'Log in'),
+    sso ? h('p', { class: 'muted auth-or' }, 'or') : null, sso), error);
 }
 
 function codeView(ticket) {
@@ -2254,11 +2295,14 @@ function codeView(ticket) {
   };
   authBox('2FA', 'Enter the TOTP code.', h('form', { onsubmit: submit },
     authField('Code', code), h('div', { class: 'dialog-actions' },
-      h('button', { type: 'button', onclick: loginView }, 'Back'), h('button', { class: 'primary', type: 'submit' }, 'Log in'))), error);
+      h('button', { type: 'button', onclick: () => location.reload() }, 'Back'), h('button', { class: 'primary', type: 'submit' }, 'Log in'))), error);
 }
 
-function setupView() {
+function setupView(session) {
   const error = h('div');
+  const notice = ssoNotice();
+  if (notice) error.append(notice);
+  const sso = ssoButton(session, false);
   const code = h('input', { name: 'code', autocomplete: 'off', required: true });
   const name = h('input', { name: 'username', autocomplete: 'username', required: true, value: 'admin' });
   const password = h('input', { name: 'password', type: 'password', autocomplete: 'new-password', minlength: '12', required: true });
@@ -2280,11 +2324,36 @@ function setupView() {
     'There is no account yet. Create the first admin with the setup code Kea Roost printed to its log, for example with "docker compose logs kea-roost".',
     h('form', { onsubmit: submit }, authField('Setup code', code), authField('User name', name),
       authField('Password, at least 12 characters', password), authField('Password again', repeat),
-      h('button', { class: 'primary', type: 'submit' }, 'Create admin')), error);
+      h('button', { class: 'primary', type: 'submit' }, 'Create admin'),
+      sso ? h('p', { class: 'muted auth-or' }, 'or, if the groups of the provider give the admin role') : null, sso), error);
 }
 
-function accountDialog() {
+// linkForm ties the account to the login at the provider. Like a new password it
+// asks for the password and the code, so that an open session alone cannot do it.
+function linkForm(a, error) {
+  const password = h('input', { type: 'password', autocomplete: 'current-password', required: true });
+  const code = a.totp ? h('input', { inputmode: 'numeric', autocomplete: 'one-time-code', required: true }) : null;
+  return h('form', {
+    onsubmit: async event => {
+      event.preventDefault();
+      try {
+        const { ticket } = await api('POST', 'account/sso-link', { password: password.value, code: code?.value ?? '' });
+        location.href = 'api/login/oidc?link=' + encodeURIComponent(ticket);
+      } catch (err) {
+        error.replaceChildren(errorNote(err));
+      }
+    },
+  }, h('p', { class: 'muted' }, `Link this account with your login at ${ssoInfo.label}, then log in there.`),
+  authField('Current password', password), code ? authField('TOTP code', code) : null,
+  h('button', { type: 'submit' }, `Link with ${ssoInfo.label}`));
+}
+
+function accountDialog(notice) {
   const error = h('div');
+  if (notice instanceof Node) error.append(h('div', { class: 'notes' }, notice));
+  // linking is the safe way to move an account to single sign-on: the user proves
+  // the account here first, with password and 2FA
+  const sso = h('div');
   const body = h('div');
   const current = h('input', { type: 'password', autocomplete: 'current-password', required: true });
   const next = h('input', { type: 'password', autocomplete: 'new-password', minlength: '12', required: true });
@@ -2352,7 +2421,19 @@ function accountDialog() {
     };
     body.replaceChildren(...head);
   };
-  showDialog(closeButton(), h('h2', {}, `Account ${meta.user}`), error, changePassword, body,
+  // an account of single sign-on only has no password to change or to confirm 2FA with
+  const ssoOnly = h('p', { class: 'muted', hidden: true }, 'This account logs in with single sign-on only; its password and second factor are managed by the provider.');
+  api('GET', 'account').then(a => {
+    if (ssoInfo) {
+      sso.replaceChildren(h('h3', {}, 'Single sign-on'), a.sso
+        ? h('p', { class: 'muted' }, `Linked with ${ssoInfo.label}.`)
+        : linkForm(a, error));
+    }
+    if (a.password) return;
+    changePassword.hidden = body.hidden = true;
+    ssoOnly.hidden = false;
+  }).catch(() => {});
+  showDialog(closeButton(), h('h2', {}, `Account ${meta.user}`), error, ssoOnly, sso, changePassword, body,
     h('div', { class: 'dialog-actions' }, h('button', {
       onclick: async () => {
         await api('POST', 'logout');
@@ -2371,6 +2452,7 @@ function usersSection() {
       { key: 'name', label: 'User', class: 'mono', search: r => r.name },
       { key: 'role', label: 'Role', search: r => r.role, render: r => h('span', { class: 'tag' }, r.role) },
       { key: 'mfa', label: '2FA', render: r => r.mfa ? state('ok', 'on') : state('neutral', 'off') },
+      { key: 'sso', label: 'Single sign-on', render: r => r.sso ? state('ok', 'linked') : '–' },
       { key: 'created', label: 'Created', class: 'mono', render: r => fmtShort(r.created) },
     ],
     actions: [r => h('button', { class: 'small', onclick: () => userDialog(r, load) }, 'Edit'),
@@ -2408,11 +2490,12 @@ function userDialog(existing, reload) {
   // the own password and 2FA go through the account menu
   const own = existing?.name === meta.user;
   const reset = existing?.mfa && !own ? h('input', { type: 'checkbox' }) : null;
+  const unlink = existing?.sso ? h('input', { type: 'checkbox' }) : null;
   const save = async event => {
     event.preventDefault();
     try {
       if (existing) {
-        await api('PUT', 'users/' + encodeURIComponent(existing.name), { role: role.value, password: own ? '' : password.value, resetTotp: !!reset?.checked });
+        await api('PUT', 'users/' + encodeURIComponent(existing.name), { role: role.value, password: own ? '' : password.value, resetTotp: !!reset?.checked, unlinkSso: !!unlink?.checked });
       } else {
         await api('POST', 'users', { name: name.value, role: role.value, password: password.value });
       }
@@ -2427,6 +2510,7 @@ function userDialog(existing, reload) {
     own ? h('p', { class: 'muted' }, 'Your own password and 2FA are changed in the account menu.')
       : authField(existing ? 'New password, empty keeps the current one' : 'Password, at least 12 characters', password),
     reset ? h('label', { class: 'check' }, reset, ' Reset 2FA (lost device)') : null,
+    unlink ? h('label', { class: 'check' }, unlink, ' Unlink single sign-on, so that the next login of this name links anew') : null,
     h('div', { class: 'dialog-actions' }, h('button', { type: 'button', onclick: closeDialog }, 'Cancel'),
       h('button', { class: 'primary', type: 'submit' }, 'Save'))));
 }
@@ -2440,9 +2524,10 @@ async function start() {
     view.replaceChildren(errorNote(err));
     return;
   }
+  ssoInfo = session.sso || null;
   if (!session.user) {
-    if (session.setup) setupView();
-    else loginView();
+    if (session.setup) setupView(session);
+    else loginView(session);
     return;
   }
   try {
@@ -2469,6 +2554,13 @@ async function start() {
     meta.user, meta.writable ? null : h('span', { class: 'tag' }, 'viewer')));
   window.addEventListener('hashchange', route);
   route();
+  // back from linking the account with single sign-on: the account menu tells how it went
+  const reason = new URLSearchParams(location.search).get('sso');
+  if (reason) {
+    history.replaceState(null, '', location.pathname + location.hash);
+    accountDialog(reason === 'linked' ? h('div', { class: 'note ok' }, 'Your account is linked: you can log in with single sign-on now.')
+      : h('div', { class: 'note crit' }, Object.hasOwn(SSO_ERRORS, reason) ? SSO_ERRORS[reason] : SSO_ERRORS.failed));
+  }
 }
 
 start();
