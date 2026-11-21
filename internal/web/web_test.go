@@ -51,6 +51,8 @@ func testAuth(t *testing.T, a web.Auth) web.Auth {
 	return a
 }
 
+// cookies keeps the session of a server while the test that logged in runs. A
+// later test can get a server on the same port, which must not inherit it.
 var (
 	cookiesMu sync.Mutex
 	cookies   = map[string]*http.Cookie{}
@@ -74,6 +76,11 @@ func sessionFor(t *testing.T, base, name, password string) *http.Cookie {
 	for _, c := range res.Cookies() {
 		if c.Name == "kea_roost_session" {
 			cookies[key] = c
+			t.Cleanup(func() {
+				cookiesMu.Lock()
+				defer cookiesMu.Unlock()
+				delete(cookies, key)
+			})
 			return c
 		}
 	}
