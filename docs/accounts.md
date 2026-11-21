@@ -75,9 +75,3 @@ in any more, delete `users.json` and create a new first admin:
     docker run --rm -v kea-roost_data:/data alpine rm /data/users.json
     docker compose up -d
 
-## Coming from Basic Auth
-
-`MANAGER_USER` and `MANAGER_PASSWORD` are no longer read; Kea Roost warns about them at
-the start. Create the first admin as above. Scripts log in through `POST api/login` and
-keep the session cookie. `/metrics` has a login of its own, see
-[Prometheus metrics](metrics.md).
