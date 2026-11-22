@@ -3,7 +3,7 @@ module github.com/vgropp/kea-roost
 go 1.26.0
 
 require (
-	github.com/boombuler/barcode v1.1.0
+	github.com/boombuler/barcode v1.1.1
 	github.com/chromedp/cdproto v0.160.3
 	github.com/chromedp/chromedp v0.24.0
 	github.com/coreos/go-oidc/v3 v3.21.0
