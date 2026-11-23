@@ -7,7 +7,7 @@ require (
 	github.com/chromedp/cdproto v0.160.8
 	github.com/chromedp/chromedp v0.24.0
 	github.com/coreos/go-oidc/v3 v3.21.0
-	github.com/go-jose/go-jose/v4 v4.1.6
+	github.com/go-jose/go-jose/v4 v4.1.9
 	golang.org/x/crypto v0.59.0
 	golang.org/x/oauth2 v0.38.0
 )
