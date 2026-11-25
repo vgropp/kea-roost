@@ -22,7 +22,7 @@ func (p Pool) Contains(ip netip.Addr) bool {
 	return p.First.Compare(ip) <= 0 && ip.Compare(p.Last) <= 0
 }
 
-// Size returns the number of addresses in the pool.
+// Size returns the number of addresses in an IPv4 pool.
 func (p Pool) Size() int64 {
 	first, last := p.First.As4(), p.Last.As4()
 	return int64(binary.BigEndian.Uint32(last[:])) - int64(binary.BigEndian.Uint32(first[:])) + 1
@@ -56,7 +56,7 @@ func (s Subnet) option(name string, code int64) []string {
 	for _, o := range s.Options {
 		if o.Name == name || o.Code == code {
 			var out []string
-			for _, v := range strings.Split(o.Data, ",") {
+			for v := range strings.SplitSeq(o.Data, ",") {
 				if v = strings.TrimSpace(v); v != "" {
 					out = append(out, v)
 				}
@@ -84,7 +84,7 @@ func ownOption(options []Option, name string, code int64) []string {
 	for _, o := range options {
 		if (o.Name == name || o.Code == code) && o.Source == SourceSubnet {
 			var out []string
-			for _, v := range strings.Split(o.Data, ",") {
+			for v := range strings.SplitSeq(o.Data, ",") {
 				if v = strings.TrimSpace(v); v != "" {
 					out = append(out, v)
 				}
@@ -410,6 +410,9 @@ func buildSubnet(raw rawSubnet, network string, global, shared rawScope) (Subnet
 		if err != nil {
 			return Subnet{}, fmt.Errorf("subnet %d: %w", raw.ID, err)
 		}
+		if !p.First.Is4() || !p.Last.Is4() {
+			return Subnet{}, fmt.Errorf("subnet %d: pool %q is no IPv4 range", raw.ID, rp.Pool)
+		}
 		p.ID = int64(i)
 		if rp.PoolID != nil {
 			p.ID = *rp.PoolID
@@ -507,28 +510,29 @@ func mergeSourced(space string, levels []string, scopes ...[]rawOption) []Option
 	return out
 }
 
-// ParsePool parses both pool notations of Kea: "a - b" and prefix.
+// ParsePool parses both pool notations of Kea, "a - b" and prefix, for either
+// address family. Callers check the family and the order themselves.
 func ParsePool(text string) (Pool, error) {
 	if first, last, ok := strings.Cut(text, "-"); ok {
 		a, err := netip.ParseAddr(strings.TrimSpace(first))
 		if err != nil {
-			return Pool{}, fmt.Errorf("Pool %q: %w", text, err)
+			return Pool{}, fmt.Errorf("pool %q: %w", text, err)
 		}
 		b, err := netip.ParseAddr(strings.TrimSpace(last))
 		if err != nil {
-			return Pool{}, fmt.Errorf("Pool %q: %w", text, err)
+			return Pool{}, fmt.Errorf("pool %q: %w", text, err)
 		}
 		return Pool{Text: text, First: a, Last: b}, nil
 	}
 	prefix, err := netip.ParsePrefix(strings.TrimSpace(text))
 	if err != nil {
-		return Pool{}, fmt.Errorf("Pool %q: %w", text, err)
+		return Pool{}, fmt.Errorf("pool %q: %w", text, err)
 	}
 	prefix = prefix.Masked()
-	first := prefix.Addr().As4()
-	last := first
-	for i := prefix.Bits(); i < 32; i++ {
+	last := prefix.Addr().AsSlice()
+	for i := prefix.Bits(); i < len(last)*8; i++ {
 		last[i/8] |= 1 << (7 - i%8)
 	}
-	return Pool{Text: text, First: prefix.Addr(), Last: netip.AddrFrom4(last)}, nil
+	end, _ := netip.AddrFromSlice(last)
+	return Pool{Text: text, First: prefix.Addr(), Last: end}, nil
 }

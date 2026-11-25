@@ -125,7 +125,7 @@ func Load(getenv func(string) string) (*Config, error) {
 	if len(c.Peers6) > 0 && c.Kea6URL == "" {
 		return nil, errors.New("KEA6_PEERS needs KEA6_URL for the primary kea-dhcp6")
 	}
-	for _, item := range strings.Split(getenv("MANAGER_TRUSTED_PROXIES"), ",") {
+	for item := range strings.SplitSeq(getenv("MANAGER_TRUSTED_PROXIES"), ",") {
 		if item = strings.TrimSpace(item); item == "" {
 			continue
 		}
@@ -142,7 +142,7 @@ func Load(getenv func(string) string) (*Config, error) {
 	if c.HostsDir != "" && !strings.HasPrefix(c.HostsDir, "/") {
 		return nil, fmt.Errorf("DNS_HOSTS_DIR %q must be an absolute path", c.HostsDir)
 	}
-	for _, domain := range strings.Split(getenv("DNS_HOSTS_DOMAIN"), ",") {
+	for domain := range strings.SplitSeq(getenv("DNS_HOSTS_DOMAIN"), ",") {
 		domain = strings.Trim(strings.TrimSpace(domain), ".")
 		if domain == "" {
 			continue
@@ -246,7 +246,7 @@ func boolSetting(getenv func(string) string, name string, fallback bool) (bool, 
 func parsePeers(setting, text, primary string) ([]Peer, error) {
 	var peers []Peer
 	seen := map[string]bool{primary: true}
-	for _, item := range strings.Split(text, ",") {
+	for item := range strings.SplitSeq(text, ",") {
 		if item = strings.TrimSpace(item); item == "" {
 			continue
 		}

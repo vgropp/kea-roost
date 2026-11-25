@@ -350,6 +350,7 @@ func (m *Manager) UpdateSubnet(ctx context.Context, user string, id int64, in Su
 		action:       "subnet4-update",
 		target:       fmt.Sprintf("subnet %d, %s", id, subnet.Subnet),
 		backupReason: "subnet-update",
+		precheck:     m.sameSubnet(id, true),
 		warnings:     warnings,
 		mutate: func(ctx context.Context, k *kea.Client) error {
 			raw, err := k.SubnetGet(ctx, id)
@@ -440,7 +441,7 @@ func optionValues(raw map[string]any, name string) []string {
 
 func splitOption(data string) []string {
 	var out []string
-	for _, part := range strings.Split(data, ",") {
+	for part := range strings.SplitSeq(data, ",") {
 		if part = strings.TrimSpace(part); part != "" {
 			out = append(out, part)
 		}

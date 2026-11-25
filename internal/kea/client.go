@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -152,6 +153,13 @@ func (c *Client) Do(ctx context.Context, command string, args any) (*Response, e
 	if err != nil {
 		return nil, err
 	}
+	if cache := cacheOf(ctx, command); cache != nil {
+		return cache.ask(ctx, c, command, body)
+	}
+	return c.send(ctx, command, body)
+}
+
+func (c *Client) send(ctx context.Context, command string, body []byte) (*Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -210,10 +218,8 @@ func (c *Client) call(ctx context.Context, command string, args any, allowed ...
 	if r.Result == ResultSuccess {
 		return r, nil
 	}
-	for _, code := range allowed {
-		if r.Result == code {
-			return r, nil
-		}
+	if slices.Contains(allowed, r.Result) {
+		return r, nil
 	}
 	return nil, &CommandError{Command: command, Code: r.Result, Text: r.Text}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -228,6 +229,33 @@ type snapshot struct {
 	hosts   map[string]kea.Host
 	classes map[string]map[string]any
 	subnets map[string]map[string]any
+	// networks names the shared network of each subnet that is in one
+	networks map[string]string
+}
+
+// subnetPlace is what a subnet id stands for on one server.
+type subnetPlace struct {
+	subnet  string // as written in the configuration
+	prefix  netip.Prefix
+	network string // the shared network, if any
+}
+
+// subnetIndex maps the subnet ids of a configuration, shared networks included,
+// to their subnets.
+func subnetIndex(config json.RawMessage, v6 bool) (map[int64]subnetPlace, error) {
+	out := map[int64]subnetPlace{}
+	if v6 {
+		subnets, err := kea.ParseSubnets6(config)
+		for _, s := range subnets {
+			out[s.ID] = subnetPlace{s.Subnet, s.Prefix, s.SharedNetwork}
+		}
+		return out, err
+	}
+	subnets, err := kea.ParseSubnets(config)
+	for _, s := range subnets {
+		out[s.ID] = subnetPlace{s.Subnet, s.Prefix, s.SharedNetwork}
+	}
+	return out, err
 }
 
 func takeSnapshot(ctx context.Context, k *kea.Client, v6 bool) (*snapshot, error) {
@@ -236,24 +264,14 @@ func takeSnapshot(ctx context.Context, k *kea.Client, v6 bool) (*snapshot, error
 		return nil, err
 	}
 	root, list := "Dhcp4", "subnet4"
-	var ids []int64
 	if v6 {
 		root, list = "Dhcp6", "subnet6"
-		subnets, err := kea.ParseSubnets6(config)
-		if err != nil {
-			return nil, err
-		}
-		ids = subnetIDs6(subnets)
-	} else {
-		subnets, err := kea.ParseSubnets(config)
-		if err != nil {
-			return nil, err
-		}
-		for _, s := range subnets {
-			ids = append(ids, s.ID)
-		}
 	}
-	hosts, err := hostsIn(ctx, k, ids)
+	index, err := subnetIndex(config, v6)
+	if err != nil {
+		return nil, err
+	}
+	hosts, err := hostsIn(ctx, k, slices.Sorted(maps.Keys(index)))
 	if err != nil {
 		return nil, err
 	}
@@ -268,15 +286,28 @@ func takeSnapshot(ctx context.Context, k *kea.Client, v6 bool) (*snapshot, error
 	if err := json.Unmarshal(doc[root], &section); err != nil {
 		return nil, fmt.Errorf("cannot read configuration: %w", err)
 	}
-	var classes, subnets []map[string]any
-	for key, into := range map[string]*[]map[string]any{"client-classes": &classes, list: &subnets} {
+	var classes, subnets, networks []map[string]any
+	for key, into := range map[string]*[]map[string]any{"client-classes": &classes, list: &subnets, "shared-networks": &networks} {
 		if raw := section[key]; raw != nil {
 			if err := json.Unmarshal(raw, into); err != nil {
 				return nil, fmt.Errorf("cannot read %s: %w", key, err)
 			}
 		}
 	}
-	s := &snapshot{map[string]kea.Host{}, map[string]map[string]any{}, map[string]map[string]any{}}
+	s := &snapshot{hosts: map[string]kea.Host{}, classes: map[string]map[string]any{}, subnets: map[string]map[string]any{}, networks: map[string]string{}}
+	for _, network := range networks {
+		inner, _ := network[list].([]any)
+		for _, item := range inner {
+			if n, ok := item.(map[string]any); ok {
+				subnets = append(subnets, n)
+			}
+		}
+	}
+	for _, place := range index {
+		if place.network != "" {
+			s.networks[place.subnet] = place.network
+		}
+	}
 	for _, h := range hosts {
 		idType, id := h.Identifier()
 		s.hosts[target(h.SubnetID(), idType, strings.ToLower(id))] = h
@@ -357,11 +388,13 @@ func compare(primary *kea.Client, want, have *snapshot, v6 bool) []Difference {
 	for _, name := range sortedKeys(want.subnets) {
 		entry := want.subnets[name]
 		other, ok := have.subnets[name]
+		wantNet, haveNet := want.networks[name], have.networks[name]
 		switch {
 		case !ok:
 			out = append(out, Difference{Kind: "subnet", Target: name, Change: "missing", Manual: true})
-		case sameJSON(subnetForCompare(entry), subnetForCompare(other)):
-		case !sameJSON(entry["id"], other["id"]):
+		case sameJSON(subnetForCompare(entry), subnetForCompare(other)) && wantNet == haveNet:
+		case !sameJSON(entry["id"], other["id"]) || wantNet != "" || haveNet != "":
+			// subnet-update cannot move a subnet into or out of a shared network
 			out = append(out, Difference{Kind: "subnet", Target: name, Change: "different", Manual: true})
 		default:
 			// subnet-update keeps the reservations of the subnet, tested with Kea 3.0
@@ -568,22 +601,16 @@ func (m *Manager) syncServer(ctx context.Context, user, name string, v6 bool) (*
 	}), nil
 }
 
-// sharedSubnetIDs are the subnets both servers have under the same id, and 0 for
-// the global reservations.
+// sharedSubnetIDs are the subnets both servers have with the same prefix under
+// the same id, and 0 for the global reservations.
 func sharedSubnetIDs(want, have *snapshot) map[int64]bool {
-	ids := func(s *snapshot) map[int64]bool {
-		out := map[int64]bool{}
-		for _, subnet := range s.subnets {
-			if id, ok := number(subnet["id"]); ok {
-				out[id] = true
-			}
-		}
-		return out
-	}
-	mine, theirs := ids(want), ids(have)
 	out := map[int64]bool{0: true}
-	for id := range mine {
-		if theirs[id] {
+	for prefix, subnet := range want.subnets {
+		other, ok := have.subnets[prefix]
+		if !ok || !sameJSON(subnet["id"], other["id"]) {
+			continue
+		}
+		if id, ok := number(subnet["id"]); ok {
 			out[id] = true
 		}
 	}

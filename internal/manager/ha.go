@@ -134,8 +134,7 @@ func (m *Manager) runHA(ctx context.Context, user, name, action string, v6 bool)
 	if err != nil {
 		res.Steps[0].Message = err.Error()
 		res.Status, res.Message = StatusFailed, "Kea rejected the action: "+err.Error()
-		var unreachable *kea.UnreachableError
-		if errors.As(err, &unreachable) {
+		if _, ok := errors.AsType[*kea.UnreachableError](err); ok {
 			res.Status, res.Message = StatusPartial, "Kea did not answer. It is unclear whether the action ran. Please check the state."
 		}
 	}

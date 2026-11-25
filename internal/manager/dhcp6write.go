@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -257,6 +258,7 @@ func (m *Manager) CreateReservation6(ctx context.Context, user string, in Reserv
 		action:       "reservation6-add",
 		target:       target6(&in),
 		backupReason: "reservation-add",
+		precheck:     m.sameSubnet(in.SubnetID, false),
 		mutate: func(ctx context.Context, k *kea.Client) error {
 			h := kea.Host{}
 			in.apply(h)
@@ -288,11 +290,10 @@ func (m *Manager) UpdateReservation6(ctx context.Context, user string, in Reserv
 		action:       "reservation6-update",
 		target:       target6(&in),
 		backupReason: "reservation-update",
+		precheck:     m.sameSubnet(in.SubnetID, false),
 		mutate: func(ctx context.Context, k *kea.Client) error {
 			h := kea.Host{}
-			for key, value := range existing {
-				h[key] = value
-			}
+			maps.Copy(h, existing)
 			in.apply(h)
 			return k.UpdateReservation(ctx, h)
 		},
@@ -325,6 +326,7 @@ func (m *Manager) DeleteReservation6(ctx context.Context, user string, subnetID 
 		action:       "reservation6-del",
 		target:       withNote(target(subnetID, identifierType, id), hostNote(existing.Hostname(), strings.Join(append(existing.IPs(), existing.Prefixes()...), ", "))),
 		backupReason: "reservation-del",
+		precheck:     m.sameSubnet(subnetID, false),
 		mutate: func(ctx context.Context, k *kea.Client) error {
 			return k.DeleteReservation(ctx, subnetID, identifierType, id)
 		},

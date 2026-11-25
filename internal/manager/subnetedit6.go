@@ -368,6 +368,7 @@ func (m *Manager) UpdateSubnet6(ctx context.Context, user string, id int64, in S
 		action:       "subnet6-update",
 		target:       fmt.Sprintf("subnet %d, %s", id, subnet.Subnet),
 		backupReason: "subnet-update",
+		precheck:     m.sameSubnet(id, true),
 		warnings:     warnings,
 		mutate: func(ctx context.Context, k *kea.Client) error {
 			raw, err := get(ctx, k)

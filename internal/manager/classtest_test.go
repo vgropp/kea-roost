@@ -259,8 +259,7 @@ func TestAdditionalClassChecks(t *testing.T) {
 	for _, bad := range [][]string{{"nothing"}, {"lan-dns", "lan-dns"}} {
 		in.AdditionalClasses = &bad
 		_, err := e.mgr.CheckSubnet(context.Background(), 1, in)
-		var v *ValidationError
-		if !errors.As(err, &v) {
+		if _, ok := errors.AsType[*ValidationError](err); !ok {
 			t.Errorf("%v: got %v", bad, err)
 		}
 	}
@@ -274,8 +273,7 @@ func TestClassTestValidation(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			e := setup(t)
 			_, err := e.mgr.CreateClass(context.Background(), "u", ClassInput{Name: "c", Test: &test, Options: []ReservationOption{{Name: "x", Data: "1"}}})
-			var v *ValidationError
-			if !errors.As(err, &v) {
+			if _, ok := errors.AsType[*ValidationError](err); !ok {
 				t.Fatalf("got %v", err)
 			}
 		})

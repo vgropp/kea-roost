@@ -84,7 +84,8 @@ func hostsContent(hosts []kea.Host, domains []string) []byte {
 	var out bytes.Buffer
 	out.WriteString("# Written by Kea Roost, changes here are lost.\n")
 	for _, e := range entries {
-		out.WriteString(e.line + "\n")
+		out.WriteString(e.line)
+		out.WriteString("\n")
 	}
 	return out.Bytes()
 }
@@ -214,8 +215,7 @@ func (m *Manager) hostsCheck() *HealthCheck {
 	m.hostsMu.Lock()
 	err := m.hostsErr
 	m.hostsMu.Unlock()
-	var stale *staleIPv6Error
-	if errors.As(err, &stale) {
+	if stale, ok := errors.AsType[*staleIPv6Error](err); ok {
 		return &HealthCheck{"DNS hosts file", "", SeverityWarn, fmt.Sprintf("IPv4 is current, the IPv6 entries are from the last refresh: %v", stale.err)}
 	}
 	if err != nil {

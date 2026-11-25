@@ -84,6 +84,9 @@ func TestParsePool(t *testing.T) {
 		{"10.0.0.128/25", "10.0.0.128", "10.0.0.255"},
 		{"10.0.0.0/32", "10.0.0.0", "10.0.0.0"},
 		{"10.0.0.0/8", "10.0.0.0", "10.255.255.255"},
+		// IPv6 prefixes once panicked here; the caller rejects the family
+		{"2001:db8::/64", "2001:db8::", "2001:db8::ffff:ffff:ffff:ffff"},
+		{"::ffff:0:0/96", "::ffff:0.0.0.0", "::ffff:255.255.255.255"},
 	}
 	for _, c := range cases {
 		p, err := ParsePool(c.text)

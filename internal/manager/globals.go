@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -168,6 +169,15 @@ func (m *Manager) globalsUnchanged(ctx context.Context, servers []server, v6 boo
 func (m *Manager) globalBlockers(ctx context.Context, servers []server, v6 bool) []string {
 	blockers := []string{}
 	for _, s := range servers {
+		// each server reloads in turn, which an HA pair only rides out from a steady state
+		status, err := s.client.Status(ctx)
+		if err != nil {
+			blockers = append(blockers, fmt.Sprintf("%s does not answer: %v", label(s.name, v6), err))
+			continue
+		}
+		if state := unsettledHA(status); state != "" {
+			blockers = append(blockers, fmt.Sprintf("HA of %s is in the state %s. Wait until it is back to normal.", label(s.name, v6), state))
+		}
 		config, err := s.client.ConfigGet(ctx)
 		if err != nil {
 			blockers = append(blockers, fmt.Sprintf("%s does not answer: %v", label(s.name, v6), err))
@@ -265,7 +275,7 @@ func countHosts(ctx context.Context, k *kea.Client, config json.RawMessage, v6 b
 // UpdateGlobalOptions replaces the global options on every server of a family,
 // primary first. Each server keeps the rest of its own configuration.
 func (m *Manager) UpdateGlobalOptions(ctx context.Context, user string, v6 bool, in []ReservationOption) (*Result, error) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), globalWriteTimeout)
+	ctx, cancel := detachedFor(ctx, globalWriteTimeout)
 	defer cancel()
 	m.writeMu.Lock()
 	defer m.writeMu.Unlock()
@@ -378,22 +388,38 @@ func (m *Manager) UpdateGlobalOptions(ctx context.Context, user string, v6 bool,
 	}), nil
 }
 
-// waitForHA waits while a server that runs HA passes through the states of a
-// restart. Any other state counts as settled, also partner-down: with the partner
-// away there is nothing to wait for. A server without HA returns at once; a
-// control socket that does not answer yet right after the reload is asked again.
+// haSettled reports an HA state a server can reload from and should come back
+// to. Partner-down counts as settled: with the partner away there is nothing to
+// wait for.
+func haSettled(state string) bool {
+	return HAStateSeverity(state) == SeverityOK || state == "partner-down"
+}
+
+// unsettledHA returns the first HA state of a server that is not settled, or "".
+func unsettledHA(status *kea.Status) string {
+	for _, rel := range status.HA {
+		if state := rel.Servers.Local.State; !haSettled(state) {
+			return state
+		}
+	}
+	return ""
+}
+
+// waitForHA waits until every HA relationship of a server is settled again after
+// a reload. A server without HA returns at once, a terminated one at once with an
+// error; a control socket that does not answer yet right after the reload is
+// asked again.
 func waitForHA(ctx context.Context, k *kea.Client) error {
-	transitional := map[string]bool{"waiting": true, "syncing": true, "ready": true}
 	deadline := time.Now().Add(haSettleTimeout)
 	for {
 		status, err := k.Status(ctx)
 		state := ""
 		if err == nil {
-			if len(status.HA) == 0 {
+			switch state = unsettledHA(status); state {
+			case "":
 				return nil
-			}
-			if state = status.HA[0].Servers.Local.State; !transitional[state] {
-				return nil
+			case "terminated":
+				return errors.New("HA terminated after the reload; the partners need a hand")
 			}
 		}
 		if time.Now().After(deadline) {

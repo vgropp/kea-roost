@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/big"
 	"net/netip"
-	"strings"
 )
 
 // Lease6 is an entry of lease6-get-all. Type is IA_NA for an address and IA_PD for
@@ -212,35 +211,17 @@ func buildSubnet6(raw rawSubnet6, global, shared rawScope6) (Subnet6, error) {
 
 // ParsePool6 parses both pool notations of Kea for IPv6: "a - b" and prefix.
 func ParsePool6(text string) (Pool6, error) {
-	var first, last netip.Addr
-	if a, b, ok := strings.Cut(text, "-"); ok {
-		var err error
-		if first, err = netip.ParseAddr(strings.TrimSpace(a)); err != nil {
-			return Pool6{}, fmt.Errorf("pool %q: %w", text, err)
-		}
-		if last, err = netip.ParseAddr(strings.TrimSpace(b)); err != nil {
-			return Pool6{}, fmt.Errorf("pool %q: %w", text, err)
-		}
-	} else {
-		prefix, err := netip.ParsePrefix(strings.TrimSpace(text))
-		if err != nil {
-			return Pool6{}, fmt.Errorf("pool %q: %w", text, err)
-		}
-		prefix = prefix.Masked()
-		first = prefix.Addr()
-		bytes := first.As16()
-		for i := prefix.Bits(); i < 128; i++ {
-			bytes[i/8] |= 1 << (7 - i%8)
-		}
-		last = netip.AddrFrom16(bytes)
+	p, err := ParsePool(text)
+	if err != nil {
+		return Pool6{}, err
 	}
-	if !first.Is6() || !last.Is6() || last.Less(first) {
+	if !p.First.Is6() || !p.Last.Is6() || p.Last.Less(p.First) {
 		return Pool6{}, fmt.Errorf("pool %q is no IPv6 range", text)
 	}
-	a, b := first.As16(), last.As16()
+	a, b := p.First.As16(), p.Last.As16()
 	size := new(big.Int).Sub(new(big.Int).SetBytes(b[:]), new(big.Int).SetBytes(a[:]))
 	size.Add(size, big.NewInt(1))
-	return Pool6{Text: text, First: first, Last: last, Size: size.String()}, nil
+	return Pool6{Text: text, First: p.First, Last: p.Last, Size: size.String()}, nil
 }
 
 // IPs returns the addresses of an IPv6 reservation.

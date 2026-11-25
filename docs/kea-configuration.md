@@ -69,9 +69,11 @@ this before saving.
 
 From Kea 3.0.4 on, Kea Roost checks the configuration with `config-test` first. Older
 releases skip it, because there `config-test` left the HA listener closed (ISC issues
-#4145 and #4616), and the dialog names those servers. Each server is then given time
-to return to its normal HA state before the next one reloads, so the partners of a
-pair never reload at once.
+#4145 and #4616), and the dialog names those servers. A change starts only while
+every HA server is in a normal state or in `partner-down`; otherwise the form says
+which server to wait for. Each server is then given time to return to such a state
+before the next one reloads, so the partners of a pair never reload at once. A server
+that ends in `terminated` stops the change at once.
 
 The configuration sent back holds what `config-get` returned, including the passwords
 of databases and hooks in plain text, as Kea 3.0 reports them. Global options in

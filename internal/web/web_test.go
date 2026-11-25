@@ -481,3 +481,27 @@ func TestMetricsCanBeTurnedOff(t *testing.T) {
 		t.Fatalf("got %d", res.StatusCode)
 	}
 }
+
+// A page asks Kea each read once, however many parts of it need the answer,
+// while each page load reads afresh.
+func TestPageReadsKeaOnce(t *testing.T) {
+	fake, srv := setup(t, login)
+	// one subnet: its reservations and the global ones
+	limits := map[string]int{"config-get": 1, "lease4-get-all": 1, "status-get": 1, "reservation-get-all": 2}
+	for _, path := range []string{"/api/dashboard", "/api/reservations", "/api/subnets", "/api/dashboard"} {
+		fake.Lock()
+		fake.Calls = nil
+		fake.Unlock()
+		if res, body := do(t, srv, "GET", path, "", true); res.StatusCode != 200 {
+			t.Fatalf("%s: %d %s", path, res.StatusCode, body)
+		}
+		for command, limit := range limits {
+			if n := fake.CallCount(command); n > limit {
+				t.Errorf("%s sent %s %d times", path, command, n)
+			}
+		}
+		if fake.CallCount("config-get") == 0 {
+			t.Errorf("%s was answered from an earlier page", path)
+		}
+	}
+}

@@ -8,6 +8,7 @@ package keatest
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -40,6 +41,9 @@ type Server struct {
 	Leases6 []map[string]any
 	// Reconfigured counts the config-set commands that replaced Config.
 	Reconfigured int
+	// HAStateAfterReload, when set, is the HA state the server reports after a
+	// config-set, as a real one passes through waiting and syncing.
+	HAStateAfterReload string
 	// Hold keeps a command waiting until its channel is closed, as a slow Kea
 	// would, without blocking other commands meanwhile.
 	Hold map[string]chan struct{}
@@ -140,6 +144,19 @@ func (s *Server) HasCall(command string) bool {
 	s.Lock()
 	defer s.Unlock()
 	return slices.Contains(s.Calls, command)
+}
+
+// CallCount reports how often the fake received command.
+func (s *Server) CallCount(command string) int {
+	s.Lock()
+	defer s.Unlock()
+	n := 0
+	for _, c := range s.Calls {
+		if c == command {
+			n++
+		}
+	}
+	return n
 }
 
 // ServeHTTP implements the control socket.
@@ -292,9 +309,7 @@ func (s *Server) handle(command string, args map[string]any) (int, string, any) 
 		}
 	case "config-get":
 		cfg := map[string]any{}
-		for k, v := range s.Config {
-			cfg[k] = v
-		}
+		maps.Copy(cfg, s.Config)
 		if s.DHCP6 {
 			return 0, "", map[string]any{"Dhcp6": cfg, "hash": "ABC"}
 		}
@@ -311,6 +326,9 @@ func (s *Server) handle(command string, args map[string]any) (int, string, any) 
 		if command == "config-set" {
 			s.Config = section
 			s.Reconfigured++
+			if s.HAStateAfterReload != "" {
+				s.setHAState(s.HAStateAfterReload)
+			}
 		}
 		return 0, "Configuration successful.", nil
 	case "config-write":

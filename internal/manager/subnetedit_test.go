@@ -155,6 +155,18 @@ func TestSubnetCheckWarnsWithoutChanging(t *testing.T) {
 	}
 }
 
+func TestIPv6PoolInIPv4Subnet(t *testing.T) {
+	e := setup(t)
+	for _, pool := range []string{"2001:db8::/64", "::ffff:0:0/96", "2001:db8::1 - 2001:db8::9"} {
+		in := subnetInput()
+		in.Pools = []string{pool}
+		_, err := e.mgr.CheckSubnet(context.Background(), 1, in)
+		if v, ok := errors.AsType[*ValidationError](err); !ok || !strings.Contains(v.Error(), "invalid pool") {
+			t.Errorf("%s: %v", pool, err)
+		}
+	}
+}
+
 func TestUpdateSubnetFailures(t *testing.T) {
 	cases := []struct {
 		name    string

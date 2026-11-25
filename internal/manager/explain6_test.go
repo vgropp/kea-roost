@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -10,7 +11,7 @@ import (
 func steps(e *Explanation) string {
 	var b strings.Builder
 	for _, s := range e.Steps {
-		b.WriteString(string(s.Severity) + " " + s.Title + ": " + s.Detail + "\n")
+		fmt.Fprintf(&b, "%s %s: %s\n", s.Severity, s.Title, s.Detail)
 	}
 	return b.String()
 }

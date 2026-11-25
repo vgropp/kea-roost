@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -89,7 +90,8 @@ func (c *Client) ConfigGet(ctx context.Context) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	return r.Arguments, nil
+	// a cached answer is shared, and callers may change their copy
+	return slices.Clone(r.Arguments), nil
 }
 
 // ConfigTest lets Kea check a complete configuration without applying it.

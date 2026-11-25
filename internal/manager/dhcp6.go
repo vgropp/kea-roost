@@ -228,7 +228,7 @@ func (m *Manager) devicesByMAC(ctx context.Context) (map[string]kea.Host, *Warni
 // type Ethernet. Other DUIDs carry no MAC.
 func macFromDUID(duid string) string {
 	var b []byte
-	for _, part := range strings.Split(strings.ReplaceAll(duid, "-", ":"), ":") {
+	for part := range strings.SplitSeq(strings.ReplaceAll(duid, "-", ":"), ":") {
 		n, err := strconv.ParseUint(part, 16, 8)
 		if err != nil || len(part) != 2 {
 			return ""

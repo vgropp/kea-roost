@@ -133,7 +133,8 @@ func (s metricSet) render() []byte {
 		f := s[name]
 		fmt.Fprintf(&out, "# HELP %s %s\n# TYPE %s gauge\n", name, f.help, name)
 		for _, sample := range f.samples {
-			out.WriteString(sample + "\n")
+			out.WriteString(sample)
+			out.WriteString("\n")
 		}
 	}
 	return out.Bytes()

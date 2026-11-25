@@ -397,7 +397,7 @@ func TestTOTP(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("start: %d %s", res.StatusCode, body)
 	}
-	secret := strings.Split(strings.Split(body, `"secret":"`)[1], `"`)[0]
+	secret, _, _ := strings.Cut(strings.Split(body, `"secret":"`)[1], `"`)
 	if _, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret); err != nil {
 		t.Fatalf("secret: %s", body)
 	}
@@ -420,7 +420,7 @@ func TestTOTP(t *testing.T) {
 	if res.StatusCode != http.StatusOK || !strings.Contains(body, `"totp":true`) || len(res.Cookies()) != 0 {
 		t.Fatalf("password alone logs in: %d %s", res.StatusCode, body)
 	}
-	ticket := strings.Split(strings.Split(body, `"ticket":"`)[1], `"`)[0]
+	ticket, _, _ := strings.Cut(strings.Split(body, `"ticket":"`)[1], `"`)
 	if res, _ := call(t, next, srv, "GET", "/api/meta", ""); res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("logged in without the code: %d", res.StatusCode)
 	}
@@ -492,7 +492,7 @@ func TestPasswordResetEndsWaitingLogins(t *testing.T) {
 	}
 	_, srv := setup(t, a)
 	_, body := call(t, browserClient(t), srv, "POST", "/api/login", loginBody("viewer", viewerPassword))
-	ticket := strings.Split(strings.Split(body, `"ticket":"`)[1], `"`)[0]
+	ticket, _, _ := strings.Cut(strings.Split(body, `"ticket":"`)[1], `"`)
 	admin := browserClient(t)
 	call(t, admin, srv, "POST", "/api/login", loginBody("admin", adminPassword))
 	if res, _ := call(t, admin, srv, "PUT", "/api/users/viewer", `{"password":"another passphrase"}`); res.StatusCode != http.StatusOK {

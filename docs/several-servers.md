@@ -20,6 +20,9 @@ configuration file the Kea user can write, see [Kea configuration](kea-configura
   compared.
 - If a server fails, the change stops there and reports `partial`. Nothing is rolled
   back.
+- A change to a subnet or to a reservation in a subnet first checks that every peer
+  that answers holds the same prefix under that subnet id. If not, nothing is changed
+  and the result names the server.
 - Deleting a lease also deletes it on the peers.
 - While the primary is down, pages show the data of the first peer that answers, and
   changes are refused.
@@ -34,7 +37,11 @@ neither compared nor copied.
 One card per server with its state, version, HA state and what differs from the primary.
 
 - **Copy from primary** makes a peer match the primary and deletes what only the peer
-  holds. Subnets that are missing or extra stay manual.
+  holds. Subnets that are missing or extra stay manual, and so do subnets in a shared
+  network and subnets whose id differs. Reservations are only copied into a subnet
+  that both servers hold with the same prefix and id.
+- Subnets inside shared networks are compared like the others. The settings of the
+  shared network itself are not.
 - **HA actions:** start and end maintenance, sync leases, reset and continue, as the HA
   state allows. Maintenance needs both servers in the list. Every action goes to the
   audit log.

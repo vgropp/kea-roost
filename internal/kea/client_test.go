@@ -48,8 +48,7 @@ func TestUnreachableServer(t *testing.T) {
 	srv.Close()
 	c, _ := kea.NewClient(kea.Options{URL: url})
 	_, err := c.Status(context.Background())
-	var unreachable *kea.UnreachableError
-	if !errors.As(err, &unreachable) {
+	if _, ok := errors.AsType[*kea.UnreachableError](err); !ok {
 		t.Fatalf("got %v", err)
 	}
 	if !c.LastContact().IsZero() {

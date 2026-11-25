@@ -195,7 +195,8 @@ func TestSingleDHCP6HasNoServerRows(t *testing.T) {
 func warningText(list []Warning) string {
 	var b strings.Builder
 	for _, w := range list {
-		b.WriteString(w.Message + "\n")
+		b.WriteString(w.Message)
+		b.WriteString("\n")
 	}
 	return b.String()
 }

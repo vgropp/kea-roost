@@ -97,18 +97,40 @@ func TestGlobalOptionsWaitForHA(t *testing.T) {
 	p := setupPair(t)
 	haSettlePoll, haSettleTimeout = 10*time.Millisecond, 200*time.Millisecond
 	t.Cleanup(func() { haSettlePoll, haSettleTimeout = time.Second, 45*time.Second })
-	p.fake.HA[0].(map[string]any)["ha-servers"].(map[string]any)["local"].(map[string]any)["state"] = "syncing"
+	p.fake.HAStateAfterReload = "syncing"
 	res, err := p.mgr.UpdateGlobalOptions(context.Background(), "admin", false, []ReservationOption{{Name: "domain-name", Data: "lan"}})
 	if err != nil || res.Status != StatusPartial || p.peer.Reconfigured != 0 || !strings.Contains(res.Steps[len(res.Steps)-1].Message, "HA state is still syncing") {
 		t.Fatalf("%+v %v", res, err)
 	}
-	// with the partner away, partner-down is as settled as it gets
-	p.fake.HA[0].(map[string]any)["ha-servers"].(map[string]any)["local"].(map[string]any)["state"] = "partner-down"
+	// a terminated pair is reported at once instead of waited for
+	p.fake.SetHAState("hot-standby")
+	p.fake.HAStateAfterReload = "terminated"
 	later := time.Now().Add(time.Second)
 	p.mgr.now = func() time.Time { return later }
 	res, err = p.mgr.UpdateGlobalOptions(context.Background(), "admin", false, []ReservationOption{{Name: "domain-name", Data: "home"}})
+	if err != nil || res.Status != StatusPartial || p.peer.Reconfigured != 0 || !strings.Contains(res.Steps[len(res.Steps)-1].Message, "terminated") {
+		t.Fatalf("terminated: %+v %v", res, err)
+	}
+	// with the partner away, partner-down is as settled as it gets
+	p.fake.HAStateAfterReload = "partner-down"
+	p.fake.SetHAState("partner-down")
+	later = later.Add(time.Second)
+	res, err = p.mgr.UpdateGlobalOptions(context.Background(), "admin", false, []ReservationOption{{Name: "domain-name", Data: "lan"}})
 	if err != nil || res.Status != StatusOK || p.peer.Reconfigured != 1 {
 		t.Fatalf("partner down: %+v %v", res, err)
+	}
+}
+
+// A reload starts only from a steady HA state.
+func TestGlobalOptionsBlockedWhileHAIsUnsettled(t *testing.T) {
+	p := setupPair(t)
+	p.peer.SetHAState("communication-recovery")
+	list, err := p.mgr.GlobalOptions(context.Background(), false)
+	if err != nil || len(list.Blockers) != 1 || !strings.Contains(list.Blockers[0], "standby is in the state communication-recovery") {
+		t.Fatalf("%+v %v", list, err)
+	}
+	if _, err := p.mgr.UpdateGlobalOptions(context.Background(), "admin", false, []ReservationOption{{Name: "domain-name", Data: "lan"}}); err == nil || p.fake.Reconfigured != 0 {
+		t.Fatalf("not blocked: %v", err)
 	}
 }
 

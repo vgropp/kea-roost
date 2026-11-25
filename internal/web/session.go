@@ -90,8 +90,8 @@ func (s *server) clientKey(r *http.Request) string {
 	}
 	if trusted(host) {
 		hops := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
-		for i := len(hops) - 1; i >= 0; i-- {
-			hop := strings.TrimSpace(hops[i])
+		for _, hop := range slices.Backward(hops) {
+			hop = strings.TrimSpace(hop)
 			if hop == "" {
 				break
 			}

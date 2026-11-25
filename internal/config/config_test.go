@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,9 +151,7 @@ func oidcEnv(extra map[string]string) map[string]string {
 		"KEA_URL": "http://kea", "OIDC_ISSUER": "https://auth.example/", "OIDC_CLIENT_ID": "kea-roost",
 		"OIDC_CLIENT_SECRET": "secret", "OIDC_REDIRECT_URL": "https://roost.example/api/login/oidc/callback",
 	}
-	for k, v := range extra {
-		values[k] = v
-	}
+	maps.Copy(values, extra)
 	return values
 }
 

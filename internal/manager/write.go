@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vgropp/kea-roost/internal/kea"
@@ -217,9 +219,7 @@ func mergeOptions(previous []map[string]any, input []ReservationOption) []any {
 		entry := map[string]any{}
 		for _, p := range previous {
 			if p["name"] == o.Name && o.Name != "" || fmt.Sprint(p["code"]) == fmt.Sprint(o.Code) && o.Code != 0 {
-				for k, v := range p {
-					entry[k] = v
-				}
+				maps.Copy(entry, p)
 			}
 		}
 		if o.Name != "" {
@@ -293,6 +293,9 @@ type change struct {
 	warnings                           []string
 	mutate                             func(context.Context, *kea.Client) error
 	verify                             func(context.Context, *kea.Client) error
+	// precheck, if set, runs before any server is touched; a problem it reports
+	// leaves everything as it was.
+	precheck func(context.Context, []server) string
 }
 
 func (m *Manager) run(ctx context.Context, c change) *Result {
@@ -307,6 +310,12 @@ func (m *Manager) runOn(ctx context.Context, servers []server, c change) *Result
 	if len(servers) == 0 {
 		res.Status, res.Message = StatusFailed, "Nothing was changed: no Kea server is configured for this."
 		return m.finish(c, res)
+	}
+	if c.precheck != nil {
+		if problem := c.precheck(ctx, servers); problem != "" {
+			res.Status, res.Message = StatusFailed, "Nothing was changed: "+problem
+			return m.finish(c, res)
+		}
 	}
 	done := []string{}
 	for _, s := range servers {
@@ -328,6 +337,62 @@ func (m *Manager) runOn(ctx context.Context, servers []server, c change) *Result
 		res.Message = fmt.Sprintf("Change applied, saved and verified on %s.", strings.Join(done, ", "))
 	}
 	return m.finish(c, res)
+}
+
+// sameSubnet is the precheck of a change aimed at a subnet id: every peer must
+// hold the subnet of the primary under it, or the same command would land
+// somewhere else there. With edit, the change alters the subnet itself, which a
+// peer must not hold in a shared network either. A peer that does not answer is
+// left to applyOn, which reports it as before.
+func (m *Manager) sameSubnet(id int64, edit bool) func(context.Context, []server) string {
+	if id == 0 {
+		return nil
+	}
+	return func(ctx context.Context, servers []server) string {
+		if len(servers) < 2 {
+			return ""
+		}
+		v6 := m.isV6(servers[0])
+		indexes := make([]map[int64]subnetPlace, len(servers))
+		errs := make([]error, len(servers))
+		var wg sync.WaitGroup
+		for i, s := range servers {
+			wg.Go(func() {
+				config, err := s.client.ConfigGet(ctx)
+				if err != nil {
+					// unreachable: applyOn reports it
+					return
+				}
+				indexes[i], errs[i] = subnetIndex(config, v6)
+			})
+		}
+		wg.Wait()
+		primary := label(servers[0].name, v6)
+		if errs[0] != nil {
+			return fmt.Sprintf("cannot read the subnets of %s: %v", primary, errs[0])
+		}
+		want, ok := indexes[0][id]
+		if !ok {
+			// the change itself fails on the primary and says why
+			return ""
+		}
+		for i, s := range servers[1:] {
+			name, index, err := label(s.name, v6), indexes[i+1], errs[i+1]
+			have, found := index[id]
+			switch {
+			case err != nil:
+				return fmt.Sprintf("cannot read the subnets of %s: %v", name, err)
+			case index == nil:
+			case !found:
+				return fmt.Sprintf("%s has no subnet with id %d. Add it there or compare on the Servers page.", name, id)
+			case have.prefix != want.prefix:
+				return fmt.Sprintf("subnet id %d is %s on %s but %s on %s.", id, want.prefix, primary, have.prefix, name)
+			case edit && have.network != "":
+				return fmt.Sprintf("on %s, subnet %s belongs to the shared network %s, which cannot be edited here.", name, have.prefix, have.network)
+			}
+		}
+		return ""
+	}
 }
 
 // applyOn runs a change on one server and adds its steps to res.
@@ -358,8 +423,7 @@ func (m *Manager) applyOn(ctx context.Context, s server, c change, res *Result) 
 		}
 	}
 	if !step("Back up configuration", err) {
-		var unreachable *kea.UnreachableError
-		if errors.As(err, &unreachable) {
+		if _, ok := errors.AsType[*kea.UnreachableError](err); ok {
 			return StatusFailed, "Nothing was changed because " + s.name + " is unreachable."
 		}
 		return StatusFailed, "Nothing was changed because the backup failed."
@@ -419,8 +483,7 @@ func (m *Manager) finish(c change, res *Result) *Result {
 	// comes last: the audit entry must not wait for a slow Kea
 	if res.Status != StatusFailed {
 		if err := m.RefreshHostsFile(context.Background()); err != nil {
-			var stale *staleIPv6Error
-			if errors.As(err, &stale) {
+			if stale, ok := errors.AsType[*staleIPv6Error](err); ok {
 				res.Warnings = append(res.Warnings, "The DNS hosts file is updated, but its IPv6 entries are from the last refresh: "+stale.err.Error())
 			} else {
 				res.Warnings = append(res.Warnings, "Could not update the DNS hosts file: "+err.Error())
@@ -432,8 +495,13 @@ func (m *Manager) finish(c change, res *Result) *Result {
 
 // A change must run to its end once Kea was touched, even if the browser is
 // closed halfway through.
+// It reads Kea afresh throughout, also after a cached read before it.
 func detached(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
+	return detachedFor(ctx, writeTimeout)
+}
+
+func detachedFor(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(kea.WithoutReadCache(context.WithoutCancel(ctx)), timeout)
 }
 
 // precheck validates a reservation. Warnings need a confirmation, hints are only
@@ -628,6 +696,7 @@ func (m *Manager) CreateReservation(ctx context.Context, user string, in Reserva
 		action:       "reservation-add",
 		target:       withNote(target(in.SubnetID, in.IdentifierType, in.Identifier), hostNote(in.Hostname, in.IPAddress)),
 		backupReason: "reservation-add",
+		precheck:     m.sameSubnet(in.SubnetID, false),
 		warnings:     warnings,
 		mutate: func(ctx context.Context, k *kea.Client) error {
 			h := kea.Host{}
@@ -680,6 +749,7 @@ func (m *Manager) UpdateReservation(ctx context.Context, user string, in Reserva
 		action:       "reservation-update",
 		target:       withNote(target(in.SubnetID, in.IdentifierType, in.Identifier), changeNote(hostNote(existing.Hostname(), existing.IP()), hostNote(in.Hostname, in.IPAddress))),
 		backupReason: "reservation-update",
+		precheck:     m.sameSubnet(in.SubnetID, false),
 		warnings:     warnings,
 		mutate: func(ctx context.Context, k *kea.Client) error {
 			in.apply(existing)
@@ -704,6 +774,7 @@ func (m *Manager) replaceReservation(ctx context.Context, user string, in Reserv
 		action:       "reservation-replace",
 		target:       withNote(fmt.Sprintf("%s -> %s %s", target(in.SubnetID, oldType, oldID), newType, newID), changeNote(hostNote(existing.Hostname(), existing.IP()), hostNote(in.Hostname, in.IPAddress))),
 		backupReason: "reservation-replace",
+		precheck:     m.sameSubnet(in.SubnetID, false),
 		warnings:     warnings,
 		mutate: func(ctx context.Context, k *kea.Client) error {
 			host := kea.Host{}
@@ -757,6 +828,7 @@ func (m *Manager) DeleteReservation(ctx context.Context, user string, subnetID i
 		action:       "reservation-del",
 		target:       withNote(target(subnetID, identifierType, id), hostNote(existing.Hostname(), existing.IP())),
 		backupReason: "reservation-del",
+		precheck:     m.sameSubnet(subnetID, false),
 		mutate: func(ctx context.Context, k *kea.Client) error {
 			return k.DeleteReservation(ctx, subnetID, identifierType, id)
 		},

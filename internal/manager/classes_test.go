@@ -72,8 +72,7 @@ func TestUsedClassCannotBeDeleted(t *testing.T) {
 	e.class(t)
 	e.fake.Hosts = []map[string]any{{"subnet-id": 0, "hw-address": "aa:bb:cc:00:00:01", "ip-address": "192.0.2.10", "client-classes": []any{"direct-dns"}}}
 	_, err := e.mgr.DeleteClass(context.Background(), "u", "direct-dns")
-	var v *ValidationError
-	if !errors.As(err, &v) {
+	if _, ok := errors.AsType[*ValidationError](err); !ok {
 		t.Fatalf("got %v", err)
 	}
 }

@@ -502,3 +502,76 @@ func TestSyncLeavesReservationsOfMissingSubnets(t *testing.T) {
 		t.Fatalf("%+v %v", res, err)
 	}
 }
+
+func sharedNetwork(subnet map[string]any) []any {
+	return []any{map[string]any{"name": "office", "subnet4": []any{subnet}}}
+}
+
+// Subnets in a shared network are compared too; their reservations sync, the
+// subnet itself is left to the operator.
+func TestSyncSeesSubnetsInSharedNetworks(t *testing.T) {
+	p := setupPair(t)
+	p.fake.Config["shared-networks"] = sharedNetwork(map[string]any{"id": 2, "subnet": "198.51.100.0/24", "valid-lifetime": 600})
+	p.peer.Config["shared-networks"] = sharedNetwork(map[string]any{"id": 2, "subnet": "198.51.100.0/24", "valid-lifetime": 900})
+	p.fake.Hosts = append(p.fake.Hosts, map[string]any{"subnet-id": 2, "hw-address": "aa:bb:cc:00:00:22", "ip-address": "198.51.100.10"})
+	var auto, manual []string
+	for _, d := range p.differences(t) {
+		if d.Manual {
+			manual = append(manual, d.Kind+" "+d.Change)
+		} else {
+			auto = append(auto, d.Kind+" "+d.Change)
+		}
+	}
+	if !slices.Equal(auto, []string{"reservation missing"}) || !slices.Equal(manual, []string{"subnet different"}) {
+		t.Fatalf("auto %v, manual %v", auto, manual)
+	}
+	res, err := p.mgr.SyncServer(context.Background(), "alice", "standby")
+	if err != nil || res.Status != StatusOK || len(p.peer.Hosts) != 1 || p.peer.HasCall("subnet4-update") {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+// The same id for another prefix is a different subnet; nothing is copied into it.
+func TestSyncNeedsTheSamePrefixForASubnetID(t *testing.T) {
+	p := setupPair(t)
+	p.fake.Config["subnet4"] = append(p.fake.Config["subnet4"].([]any), map[string]any{"id": 2, "subnet": "198.51.100.0/24"})
+	p.peer.Config["subnet4"] = append(p.peer.Config["subnet4"].([]any), map[string]any{"id": 2, "subnet": "203.0.113.0/24"})
+	p.fake.Hosts = append(p.fake.Hosts, map[string]any{"subnet-id": 2, "hw-address": "aa:bb:cc:00:00:22", "ip-address": "198.51.100.10"})
+	for _, d := range p.differences(t) {
+		if !d.Manual {
+			t.Errorf("automatic: %+v", d)
+		}
+	}
+	res, err := p.mgr.SyncServer(context.Background(), "alice", "standby")
+	if err != nil || res.Status != StatusOK || p.peer.HasCall("reservation-add") {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+// A change aimed at a subnet id stops before the primary when a peer holds
+// another subnet under that id.
+func TestChangeStopsWhenAPeerHasAnotherSubnetUnderTheID(t *testing.T) {
+	p := setupPair(t)
+	p.peer.Config["subnet4"].([]any)[0].(map[string]any)["subnet"] = "198.51.100.0/24"
+	res, err := p.mgr.CreateReservation(context.Background(), "alice", input())
+	if err != nil || res.Status != StatusFailed || !strings.Contains(res.Message, "198.51.100.0/24 on standby") || p.fake.HasCall("reservation-add") {
+		t.Fatalf("%+v %v", res, err)
+	}
+	p.peer.Config["subnet4"] = []any{}
+	res, err = p.mgr.CreateReservation(context.Background(), "alice", input())
+	if err != nil || res.Status != StatusFailed || !strings.Contains(res.Message, "standby has no subnet with id 1") {
+		t.Fatalf("missing: %+v %v", res, err)
+	}
+}
+
+// A subnet edit also refuses a peer that keeps the subnet in a shared network.
+func TestSubnetEditStopsAtASharedNetworkOnAPeer(t *testing.T) {
+	p := setupPair(t)
+	subnet := p.peer.Config["subnet4"].([]any)[0].(map[string]any)
+	p.peer.Config["subnet4"] = []any{}
+	p.peer.Config["shared-networks"] = sharedNetwork(subnet)
+	res, err := p.mgr.UpdateSubnet(context.Background(), "alice", 1, subnetInput())
+	if err != nil || res.Status != StatusFailed || !strings.Contains(res.Message, "shared network office") || p.fake.HasCall("subnet4-update") {
+		t.Fatalf("%+v %v", res, err)
+	}
+}

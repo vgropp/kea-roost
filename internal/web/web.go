@@ -108,24 +108,24 @@ func New(mgr *manager.Manager, auth Auth, basePath string) http.Handler {
 	mux.HandleFunc("GET /api/dhcp6/leases", s.dhcp6(func(ctx context.Context) (any, error) { return s.mgr.Leases6(ctx) }))
 	mux.HandleFunc("GET /api/dhcp6/reservations", s.dhcp6(func(ctx context.Context) (any, error) { return s.mgr.Reservations6(ctx) }))
 	mux.HandleFunc("POST /api/dhcp6/reservations", s.writer(s.createReservation6))
-	mux.HandleFunc("POST /api/dhcp6/reservations/check", s.writer(s.checkReservation6))
+	mux.HandleFunc("POST /api/dhcp6/reservations/check", s.writer(readCached(s.checkReservation6)))
 	mux.HandleFunc("PUT /api/dhcp6/reservations/{subnet}/{type}/{id}", s.writer(s.updateReservation6))
 	mux.HandleFunc("DELETE /api/dhcp6/reservations/{subnet}/{type}/{id}", s.writer(s.deleteReservation6))
 	mux.HandleFunc("GET /api/dhcp6/subnets", s.dhcp6(func(ctx context.Context) (any, error) { return s.mgr.Subnets6(ctx) }))
 	mux.HandleFunc("DELETE /api/dhcp6/leases/{ip}", s.writer(s.deleteLease6))
 	mux.HandleFunc("GET /api/dhcp6/clients/{ip}", s.client6)
-	mux.HandleFunc("POST /api/dhcp6/subnets/{subnet}/check", s.writer(s.checkSubnet6))
+	mux.HandleFunc("POST /api/dhcp6/subnets/{subnet}/check", s.writer(readCached(s.checkSubnet6)))
 	mux.HandleFunc("PUT /api/dhcp6/subnets/{subnet}", s.writer(s.updateSubnet6))
 	mux.HandleFunc("GET /api/dhcp6/servers", s.dhcp6(func(ctx context.Context) (any, error) { return s.mgr.Servers6(ctx) }))
 	mux.HandleFunc("POST /api/dhcp6/servers/{name}/ha/{action}", s.writer(s.haAction6))
 	mux.HandleFunc("POST /api/dhcp6/servers/{name}/sync", s.writer(s.syncServer6))
 	mux.HandleFunc("DELETE /api/leases/{ip}", s.writer(s.deleteLease))
 	mux.HandleFunc("POST /api/reservations", s.writer(s.createReservation))
-	mux.HandleFunc("POST /api/reservations/check", s.writer(s.checkReservation))
-	mux.HandleFunc("POST /api/reservations/{subnet}/{type}/{id}/check", s.writer(s.checkReservationUpdate))
+	mux.HandleFunc("POST /api/reservations/check", s.writer(readCached(s.checkReservation)))
+	mux.HandleFunc("POST /api/reservations/{subnet}/{type}/{id}/check", s.writer(readCached(s.checkReservationUpdate)))
 	mux.HandleFunc("PUT /api/reservations/{subnet}/{type}/{id}", s.writer(s.updateReservation))
 	mux.HandleFunc("DELETE /api/reservations/{subnet}/{type}/{id}", s.writer(s.deleteReservation))
-	mux.HandleFunc("POST /api/subnets/{subnet}/check", s.writer(s.checkSubnet))
+	mux.HandleFunc("POST /api/subnets/{subnet}/check", s.writer(readCached(s.checkSubnet)))
 	mux.HandleFunc("PUT /api/subnets/{subnet}", s.writer(s.updateSubnet))
 	mux.HandleFunc("GET /api/classes", s.classes)
 	mux.HandleFunc("POST /api/classes", s.writer(s.createClass))
@@ -156,11 +156,30 @@ func New(mgr *manager.Manager, auth Auth, basePath string) http.Handler {
 	}))
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	root.Handle("/", protection.Handler(s.authenticate(noStore(mux))))
+	root.Handle("/", protection.Handler(s.authenticate(noStore(cacheReads(mux)))))
 	if !auth.MetricsOff {
-		root.HandleFunc("GET /metrics", s.metricsLogin)
+		root.HandleFunc("GET /metrics", readCached(s.metricsLogin))
 	}
 	return forwardedHost(mount(basePath, secureHeaders(root)))
+}
+
+// cacheReads lets a GET ask Kea each read command once, however many parts of
+// the page need its answer. Changes never get this: they must see what they wrote.
+func cacheReads(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			readCached(next.ServeHTTP)(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// readCached gives a check, which reads only, the cache of a GET.
+func readCached(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		next(w, r.WithContext(kea.WithReadCache(r.Context())))
+	}
 }
 
 // noStore keeps API answers out of caches: they hold client data, and backups hold
@@ -289,8 +308,7 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, manager.ErrARPMonitorDisabled):
 		writeJSON(w, http.StatusNotFound, errorBody{Error: err.Error()})
 	default:
-		var ce *kea.CommandError
-		if !errors.As(err, &ce) {
+		if _, ok := errors.AsType[*kea.CommandError](err); !ok {
 			slog.Warn("kea request", "error", err)
 		}
 		writeJSON(w, http.StatusBadGateway, errorBody{Error: err.Error()})
